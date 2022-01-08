@@ -1,78 +1,26 @@
 [package]
-name = "pwasm-utils"
-version = "0.19.0"
+name = "wasm-instrument"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.56.1"
-authors = ["Nikolay Volf <nikvolf@gmail.com>", "Sergey Pepyakin <s.pepyakin@gmail.com>"]
-license = "MIT/Apache-2.0"
-readme = "README.md"
-description = "Collection of command-line utilities and corresponding Rust api for producing pwasm-compatible executables"
-keywords = ["wasm", "webassembly", "pwasm"]
-repository = "https://github.com/paritytech/wasm-utils"
-include = ["src/**/*", "LICENSE-*", "README.md", "cli/**/*"]
-
-[[bin]]
-name = "wasm-prune"
-path = "cli/prune/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-ext"
-path = "cli/ext/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-gas"
-path = "cli/gas/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-build"
-path = "cli/build/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-stack-height"
-path = "cli/stack_height/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-pack"
-path = "cli/pack/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "wasm-check"
-path = "cli/check/main.rs"
-required-features = ["cli"]
+authors = ["Parity Technologies <admin@parity.io>"]
+license = "MIT OR Apache-2.0"
+description = "Instrument and transform wasm modules."
+keywords = ["wasm", "webassembly", "blockchain", "gas-metering", "parity"]
+categories = ["wasm", "no-std"]
+repository = "https://github.com/paritytech/wasm-instrument"
+include = ["src/**/*", "LICENSE-*", "README.md"]
 
 [dependencies]
-byteorder = { version = "1", default-features = false }
-log = { version = "0.4", default-features = false }
 parity-wasm = { version = "0.42", default-features = false }
-
-# Dependencies only used by the binaries
-clap = { version = "2", optional = true }
-env_logger = { version = "0.9", optional = true }
-glob = { version = "0.3", optional = true }
-lazy_static = { version = "1", optional = true }
 
 [dev-dependencies]
 binaryen = "0.12"
 diff = "0.1"
-indoc = "1"
 rand = "0.8"
-tempdir = "0.3"
 wabt = "0.10"
 
 [features]
 default = ["std"]
-std = ["parity-wasm/std", "log/std", "byteorder/std"]
-cli = [
-  "std",
-  "glob",
-  "clap",
-  "env_logger",
-  "lazy_static",
-]
+std = ["parity-wasm/std"]
 sign_ext = ["parity-wasm/sign_ext"]

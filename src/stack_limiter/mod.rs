@@ -1,56 +1,7 @@
-//! The pass that tries to make stack overflows deterministic, by introducing
-//! an upper bound of the stack size.
-//!
-//! This pass introduces a global mutable variable to track stack height,
-//! and instruments all calls with preamble and postamble.
-//!
-//! Stack height is increased prior the call. Otherwise, the check would
-//! be made after the stack frame is allocated.
-//!
-//! The preamble is inserted before the call. It increments
-//! the global stack height variable with statically determined "stack cost"
-//! of the callee. If after the increment the stack height exceeds
-//! the limit (specified by the `rules`) then execution traps.
-//! Otherwise, the call is executed.
-//!
-//! The postamble is inserted after the call. The purpose of the postamble is to decrease
-//! the stack height by the "stack cost" of the callee function.
-//!
-//! Note, that we can't instrument all possible ways to return from the function. The simplest
-//! example would be a trap issued by the host function.
-//! That means stack height global won't be equal to zero upon the next execution after such trap.
-//!
-//! # Thunks
-//!
-//! Because stack height is increased prior the call few problems arises:
-//!
-//! - Stack height isn't increased upon an entry to the first function, i.e. exported function.
-//! - Start function is executed externally (similar to exported functions).
-//! - It is statically unknown what function will be invoked in an indirect call.
-//!
-//! The solution for this problems is to generate a intermediate functions, called 'thunks', which
-//! will increase before and decrease the stack height after the call to original function, and
-//! then make exported function and table entries, start section to point to a corresponding thunks.
-//!
-//! # Stack cost
-//!
-//! Stack cost of the function is calculated as a sum of it's locals
-//! and the maximal height of the value stack.
-//!
-//! All values are treated equally, as they have the same size.
-//!
-//! The rationale is that this makes it possible to use the following very naive wasm executor:
-//!
-//! - values are implemented by a union, so each value takes a size equal to
-//!   the size of the largest possible value type this union can hold. (In MVP it is 8 bytes)
-//! - each value from the value stack is placed on the native stack.
-//! - each local variable and function argument is placed on the native stack.
-//! - arguments pushed by the caller are copied into callee stack rather than shared
-//!   between the frames.
-//! - upon entry into the function entire stack frame is allocated.
+//! Contains the code for the stack height limiter instrumentation.
 
-use crate::std::{mem, string::String, vec::Vec};
-
+use alloc::{vec, vec::Vec};
+use core::mem;
 use parity_wasm::{
 	builder,
 	elements::{self, Instruction, Instructions, Type},
@@ -87,13 +38,7 @@ macro_rules! instrument_call {
 mod max_height;
 mod thunk;
 
-/// Error that occured during processing the module.
-///
-/// This means that the module is invalid.
-#[derive(Debug)]
-pub struct Error(String);
-
-pub(crate) struct Context {
+pub struct Context {
 	stack_height_global_idx: u32,
 	func_stack_costs: Vec<u32>,
 	stack_limit: u32,
@@ -116,17 +61,60 @@ impl Context {
 	}
 }
 
-/// Instrument a module with stack height limiter.
+/// Inject the instumentation that makes stack overflows deterministic, by introducing
+/// an upper bound of the stack size.
 ///
-/// See module-level documentation for more details.
+/// This pass introduces a global mutable variable to track stack height,
+/// and instruments all calls with preamble and postamble.
 ///
-/// # Errors
+/// Stack height is increased prior the call. Otherwise, the check would
+/// be made after the stack frame is allocated.
 ///
-/// Returns `Err` if module is invalid and can't be
-pub fn inject_limiter(
+/// The preamble is inserted before the call. It increments
+/// the global stack height variable with statically determined "stack cost"
+/// of the callee. If after the increment the stack height exceeds
+/// the limit (specified by the `rules`) then execution traps.
+/// Otherwise, the call is executed.
+///
+/// The postamble is inserted after the call. The purpose of the postamble is to decrease
+/// the stack height by the "stack cost" of the callee function.
+///
+/// Note, that we can't instrument all possible ways to return from the function. The simplest
+/// example would be a trap issued by the host function.
+/// That means stack height global won't be equal to zero upon the next execution after such trap.
+///
+/// # Thunks
+///
+/// Because stack height is increased prior the call few problems arises:
+///
+/// - Stack height isn't increased upon an entry to the first function, i.e. exported function.
+/// - Start function is executed externally (similar to exported functions).
+/// - It is statically unknown what function will be invoked in an indirect call.
+///
+/// The solution for this problems is to generate a intermediate functions, called 'thunks', which
+/// will increase before and decrease the stack height after the call to original function, and
+/// then make exported function and table entries, start section to point to a corresponding thunks.
+///
+/// # Stack cost
+///
+/// Stack cost of the function is calculated as a sum of it's locals
+/// and the maximal height of the value stack.
+///
+/// All values are treated equally, as they have the same size.
+///
+/// The rationale is that this makes it possible to use the following very naive wasm executor:
+///
+/// - values are implemented by a union, so each value takes a size equal to the size of the largest
+///   possible value type this union can hold. (In MVP it is 8 bytes)
+/// - each value from the value stack is placed on the native stack.
+/// - each local variable and function argument is placed on the native stack.
+/// - arguments pushed by the caller are copied into callee stack rather than shared between the
+///   frames.
+/// - upon entry into the function entire stack frame is allocated.
+pub fn inject(
 	mut module: elements::Module,
 	stack_limit: u32,
-) -> Result<elements::Module, Error> {
+) -> Result<elements::Module, &'static str> {
 	let mut ctx = Context {
 		stack_height_global_idx: generate_stack_height_global(&mut module),
 		func_stack_costs: compute_stack_costs(&module)?,
@@ -166,7 +154,7 @@ fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
 /// Calculate stack costs for all functions.
 ///
 /// Returns a vector with a stack cost for each function, including imports.
-fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, Error> {
+fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
 	let func_imports = module.import_count(elements::ImportCountType::Function);
 
 	// TODO: optimize!
@@ -185,37 +173,38 @@ fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, Error> {
 /// Stack cost of the given *defined* function is the sum of it's locals count (that is,
 /// number of arguments plus number of local variables) and the maximal stack
 /// height.
-fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, Error> {
+fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
 	// To calculate the cost of a function we need to convert index from
 	// function index space to defined function spaces.
 	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
 	let defined_func_idx = func_idx
 		.checked_sub(func_imports)
-		.ok_or_else(|| Error("This should be a index of a defined function".into()))?;
+		.ok_or("This should be a index of a defined function")?;
 
-	let code_section = module
-		.code_section()
-		.ok_or_else(|| Error("Due to validation code section should exists".into()))?;
+	let code_section =
+		module.code_section().ok_or("Due to validation code section should exists")?;
 	let body = &code_section
 		.bodies()
 		.get(defined_func_idx as usize)
-		.ok_or_else(|| Error("Function body is out of bounds".into()))?;
+		.ok_or("Function body is out of bounds")?;
 
 	let mut locals_count: u32 = 0;
 	for local_group in body.locals() {
-		locals_count = locals_count
-			.checked_add(local_group.count())
-			.ok_or_else(|| Error("Overflow in local count".into()))?;
+		locals_count =
+			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
 	}
 
 	let max_stack_height = max_height::compute(defined_func_idx, module)?;
 
 	locals_count
 		.checked_add(max_stack_height)
-		.ok_or_else(|| Error("Overflow in adding locals_count and max_stack_height".into()))
+		.ok_or("Overflow in adding locals_count and max_stack_height")
 }
 
-fn instrument_functions(ctx: &mut Context, module: &mut elements::Module) -> Result<(), Error> {
+fn instrument_functions(
+	ctx: &mut Context,
+	module: &mut elements::Module,
+) -> Result<(), &'static str> {
 	for section in module.sections_mut() {
 		if let elements::Section::Code(code_section) = section {
 			for func_body in code_section.bodies_mut() {
@@ -253,7 +242,7 @@ fn instrument_functions(ctx: &mut Context, module: &mut elements::Module) -> Res
 ///
 /// drop
 /// ```
-fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(), Error> {
+fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(), &'static str> {
 	use Instruction::*;
 
 	struct InstrumentCall {
@@ -314,7 +303,7 @@ fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(),
 	}
 
 	if calls.next().is_some() {
-		return Err(Error("Not all calls were used".into()))
+		return Err("Not all calls were used")
 	}
 
 	Ok(())
@@ -323,7 +312,7 @@ fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(),
 fn resolve_func_type(
 	func_idx: u32,
 	module: &elements::Module,
-) -> Result<&elements::FunctionType, Error> {
+) -> Result<&elements::FunctionType, &'static str> {
 	let types = module.type_section().map(|ts| ts.types()).unwrap_or(&[]);
 	let functions = module.function_section().map(|fs| fs.entries()).unwrap_or(&[]);
 
@@ -347,12 +336,12 @@ fn resolve_func_type(
 	} else {
 		functions
 			.get(func_idx as usize - func_imports)
-			.ok_or_else(|| Error(format!("Function at index {} is not defined", func_idx)))?
+			.ok_or("Function at the specified index is not defined")?
 			.type_ref()
 	};
-	let Type::Function(ty) = types.get(sig_idx as usize).ok_or_else(|| {
-		Error(format!("Signature {} (specified by func {}) isn't defined", sig_idx, func_idx))
-	})?;
+	let Type::Function(ty) = types
+		.get(sig_idx as usize)
+		.ok_or("The signature as specified by a function isn't defined")?;
 	Ok(ty)
 }
 
@@ -388,7 +377,7 @@ mod tests {
 "#,
 		);
 
-		let module = inject_limiter(module, 1024).expect("Failed to inject stack counter");
+		let module = inject(module, 1024).expect("Failed to inject stack counter");
 		validate_module(module);
 	}
 }

@@ -1,15 +1,14 @@
 #[cfg(not(features = "std"))]
-use crate::std::collections::BTreeMap as Map;
-#[cfg(features = "std")]
-use crate::std::collections::HashMap as Map;
-use crate::std::vec::Vec;
-
+use alloc::collections::BTreeMap as Map;
+use alloc::vec::Vec;
 use parity_wasm::{
 	builder,
 	elements::{self, FunctionType, Internal},
 };
+#[cfg(features = "std")]
+use std::collections::HashMap as Map;
 
-use super::{resolve_func_type, Context, Error};
+use super::{resolve_func_type, Context};
 
 struct Thunk {
 	signature: FunctionType,
@@ -18,12 +17,11 @@ struct Thunk {
 	callee_stack_cost: u32,
 }
 
-pub(crate) fn generate_thunks(
+pub fn generate_thunks(
 	ctx: &mut Context,
 	module: elements::Module,
-) -> Result<elements::Module, Error> {
+) -> Result<elements::Module, &'static str> {
 	// First, we need to collect all function indices that should be replaced by thunks
-
 	let mut replacement_map: Map<u32, Thunk> = {
 		let exports = module.export_section().map(|es| es.entries()).unwrap_or(&[]);
 		let elem_segments = module.elements_section().map(|es| es.entries()).unwrap_or(&[]);
@@ -43,9 +41,7 @@ pub(crate) fn generate_thunks(
 			.chain(table_func_indices)
 			.chain(start_func_idx.into_iter())
 		{
-			let callee_stack_cost = ctx
-				.stack_cost(func_idx)
-				.ok_or_else(|| Error(format!("function with idx {} isn't found", func_idx)))?;
+			let callee_stack_cost = ctx.stack_cost(func_idx).ok_or("function index isn't found")?;
 
 			// Don't generate a thunk if stack_cost of a callee is zero.
 			if callee_stack_cost != 0 {

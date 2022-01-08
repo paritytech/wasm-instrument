@@ -1,7 +1,5 @@
-use crate::std::vec::Vec;
-
-use super::{resolve_func_type, Error};
-use log::trace;
+use super::resolve_func_type;
+use alloc::vec::Vec;
 use parity_wasm::elements::{self, BlockType, Type};
 
 #[cfg(feature = "sign_ext")]
@@ -48,59 +46,44 @@ impl Stack {
 
 	/// Returns a reference to a frame by specified depth relative to the top of
 	/// control stack.
-	fn frame(&self, rel_depth: u32) -> Result<&Frame, Error> {
+	fn frame(&self, rel_depth: u32) -> Result<&Frame, &'static str> {
 		let control_stack_height: usize = self.control_stack.len();
-		let last_idx = control_stack_height
-			.checked_sub(1)
-			.ok_or_else(|| Error("control stack is empty".into()))?;
-		let idx = last_idx
-			.checked_sub(rel_depth as usize)
-			.ok_or_else(|| Error("control stack out-of-bounds".into()))?;
+		let last_idx = control_stack_height.checked_sub(1).ok_or("control stack is empty")?;
+		let idx = last_idx.checked_sub(rel_depth as usize).ok_or("control stack out-of-bounds")?;
 		Ok(&self.control_stack[idx])
 	}
 
 	/// Mark successive instructions as unreachable.
 	///
 	/// This effectively makes stack polymorphic.
-	fn mark_unreachable(&mut self) -> Result<(), Error> {
-		trace!(target: "max_height", "unreachable");
-		let top_frame = self
-			.control_stack
-			.last_mut()
-			.ok_or_else(|| Error("stack must be non-empty".into()))?;
+	fn mark_unreachable(&mut self) -> Result<(), &'static str> {
+		let top_frame = self.control_stack.last_mut().ok_or("stack must be non-empty")?;
 		top_frame.is_polymorphic = true;
 		Ok(())
 	}
 
 	/// Push control frame into the control stack.
 	fn push_frame(&mut self, frame: Frame) {
-		trace!(target: "max_height", "push_frame: {:?}", frame);
 		self.control_stack.push(frame);
 	}
 
 	/// Pop control frame from the control stack.
 	///
 	/// Returns `Err` if the control stack is empty.
-	fn pop_frame(&mut self) -> Result<Frame, Error> {
-		trace!(target: "max_height", "pop_frame: {:?}", self.control_stack.last());
-		self.control_stack.pop().ok_or_else(|| Error("stack must be non-empty".into()))
+	fn pop_frame(&mut self) -> Result<Frame, &'static str> {
+		self.control_stack.pop().ok_or("stack must be non-empty")
 	}
 
 	/// Truncate the height of value stack to the specified height.
 	fn trunc(&mut self, new_height: u32) {
-		trace!(target: "max_height", "trunc: {}", new_height);
 		self.height = new_height;
 	}
 
 	/// Push specified number of values into the value stack.
 	///
 	/// Returns `Err` if the height overflow usize value.
-	fn push_values(&mut self, value_count: u32) -> Result<(), Error> {
-		trace!(target: "max_height", "push: {}", value_count);
-		self.height = self
-			.height
-			.checked_add(value_count)
-			.ok_or_else(|| Error("stack overflow".into()))?;
+	fn push_values(&mut self, value_count: u32) -> Result<(), &'static str> {
+		self.height = self.height.checked_add(value_count).ok_or("stack overflow")?;
 		Ok(())
 	}
 
@@ -108,8 +91,7 @@ impl Stack {
 	///
 	/// Returns `Err` if the stack happen to be negative value after
 	/// values popped.
-	fn pop_values(&mut self, value_count: u32) -> Result<(), Error> {
-		trace!(target: "max_height", "pop: {}", value_count);
+	fn pop_values(&mut self, value_count: u32) -> Result<(), &'static str> {
 		if value_count == 0 {
 			return Ok(())
 		}
@@ -122,45 +104,39 @@ impl Stack {
 				return if top_frame.is_polymorphic {
 					Ok(())
 				} else {
-					Err(Error("trying to pop more values than pushed".into()))
+					return Err("trying to pop more values than pushed")
 				}
 			}
 		}
 
-		self.height = self
-			.height
-			.checked_sub(value_count)
-			.ok_or_else(|| Error("stack underflow".into()))?;
+		self.height = self.height.checked_sub(value_count).ok_or("stack underflow")?;
 
 		Ok(())
 	}
 }
 
 /// This function expects the function to be validated.
-pub(crate) fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, Error> {
+pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
 	use parity_wasm::elements::Instruction::*;
 
-	let func_section =
-		module.function_section().ok_or_else(|| Error("No function section".into()))?;
-	let code_section = module.code_section().ok_or_else(|| Error("No code section".into()))?;
-	let type_section = module.type_section().ok_or_else(|| Error("No type section".into()))?;
-
-	trace!(target: "max_height", "func_idx: {}", func_idx);
+	let func_section = module.function_section().ok_or("No function section")?;
+	let code_section = module.code_section().ok_or("No code section")?;
+	let type_section = module.type_section().ok_or("No type section")?;
 
 	// Get a signature and a body of the specified function.
 	let func_sig_idx = func_section
 		.entries()
 		.get(func_idx as usize)
-		.ok_or_else(|| Error("Function is not found in func section".into()))?
+		.ok_or("Function is not found in func section")?
 		.type_ref();
 	let Type::Function(func_signature) = type_section
 		.types()
 		.get(func_sig_idx as usize)
-		.ok_or_else(|| Error("Function is not found in func section".into()))?;
+		.ok_or("Function is not found in func section")?;
 	let body = code_section
 		.bodies()
 		.get(func_idx as usize)
-		.ok_or_else(|| Error("Function body for the index isn't found".into()))?;
+		.ok_or("Function body for the index isn't found")?;
 	let instructions = body.code();
 
 	let mut stack = Stack::new();
@@ -190,7 +166,6 @@ pub(crate) fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, E
 		}
 
 		let opcode = &instructions.elements()[pc];
-		trace!(target: "max_height", "{:?}", opcode);
 
 		match opcode {
 			Nop => {},
@@ -247,7 +222,7 @@ pub(crate) fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, E
 				for target in &*br_table_data.table {
 					let arity = stack.frame(*target)?.branch_arity;
 					if arity != arity_of_default {
-						return Err(Error("Arity of all jump-targets must be equal".into()))
+						return Err("Arity of all jump-targets must be equal")
 					}
 				}
 
@@ -276,10 +251,8 @@ pub(crate) fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, E
 				stack.push_values(callee_arity)?;
 			},
 			CallIndirect(x, _) => {
-				let Type::Function(ty) = type_section
-					.types()
-					.get(*x as usize)
-					.ok_or_else(|| Error("Type not found".into()))?;
+				let Type::Function(ty) =
+					type_section.types().get(*x as usize).ok_or("Type not found")?;
 
 				// Pop the offset into the function table.
 				stack.pop_values(1)?;

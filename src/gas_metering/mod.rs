@@ -1,25 +1,229 @@
 //! This module is used to instrument a Wasm module with gas metering code.
 //!
-//! The primary public interface is the `inject_gas_counter` function which transforms a given
+//! The primary public interface is the [`inject`] function which transforms a given
 //! module into one that charges gas for code to be executed. See function documentation for usage
 //! and details.
 
 #[cfg(test)]
 mod validation;
 
-use crate::std::{cmp::min, mem, vec::Vec};
+use alloc::{vec, vec::Vec};
+use core::{cmp::min, mem, num::NonZeroU32};
+use parity_wasm::{
+	builder,
+	elements::{self, Instruction, ValueType},
+};
 
-use crate::rules::Rules;
-use parity_wasm::{builder, elements, elements::ValueType};
+/// An interface that describes instruction costs.
+pub trait Rules {
+	/// Returns the cost for the passed `instruction`.
+	///
+	/// Returning `None` makes the gas instrumention end with an error. This is meant
+	/// as a way to have a partial rule set where any instruction that is not specifed
+	/// is considered as forbidden.
+	fn instruction_cost(&self, instruction: &Instruction) -> Option<u32>;
 
-pub fn update_call_index(instructions: &mut elements::Instructions, inserted_index: u32) {
-	use parity_wasm::elements::Instruction::*;
-	for instruction in instructions.elements_mut().iter_mut() {
-		if let Call(call_index) = instruction {
-			if *call_index >= inserted_index {
-				*call_index += 1
-			}
+	/// Returns the costs for growing the memory using the `memory.grow` instruction.
+	///
+	/// Please note that these costs are in addition to the costs specified by `instruction_cost`
+	/// for the `memory.grow` instruction. Those are meant as dynamic costs which take the
+	/// amount of pages that the memory is grown by into consideration. This is not possible
+	/// using `instruction_cost` because those costs depend on the stack and must be injected as
+	/// code into the function calling `memory.grow`. Therefore returning anything but
+	/// [`MemoryGrowCost::Free`] introduces some overhead to the `memory.grow` instruction.
+	fn memory_grow_cost(&self) -> MemoryGrowCost;
+}
+
+/// Dynamic costs for memory growth.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum MemoryGrowCost {
+	/// Skip per page charge.
+	///
+	/// # Note
+	///
+	/// This makes sense when the amount of pages that a module is allowed to use is limited
+	/// to a rather small number by static validation. In that case it is viable to
+	/// benchmark the costs of `memory.grow` as the worst case (growing to to the maximum
+	/// number of pages).
+	Free,
+	/// Charge the specified amount for each page that the memory is grown by.
+	Linear(NonZeroU32),
+}
+
+impl MemoryGrowCost {
+	/// True iff memory growths code needs to be injected.
+	fn enabled(&self) -> bool {
+		match self {
+			Self::Free => false,
+			Self::Linear(_) => true,
 		}
+	}
+}
+
+/// A type that implements [`Rules`] so that every instruction costs the same.
+///
+/// This is a simplification that is mostly useful for development and testing.
+///
+/// # Note
+///
+/// In a production environment it usually makes no sense to assign every instruction
+/// the same cost. A proper implemention of [`Rules`] should be prived that is probably
+/// created by benchmarking.
+pub struct ConstantCostRules {
+	instruction_cost: u32,
+	memory_grow_cost: u32,
+}
+
+impl ConstantCostRules {
+	/// Create a new [`ConstantCostRules`].
+	///
+	/// Uses `instruction_cost` for every instruction and `memory_grow_cost` to dynamically
+	/// meter the memory growth instruction.
+	pub fn new(instruction_cost: u32, memory_grow_cost: u32) -> Self {
+		Self { instruction_cost, memory_grow_cost }
+	}
+}
+
+impl Default for ConstantCostRules {
+	/// Uses instruction cost of `1` and disables memory growth instrumentation.
+	fn default() -> Self {
+		Self { instruction_cost: 1, memory_grow_cost: 0 }
+	}
+}
+
+impl Rules for ConstantCostRules {
+	fn instruction_cost(&self, _: &Instruction) -> Option<u32> {
+		Some(self.instruction_cost)
+	}
+
+	fn memory_grow_cost(&self) -> MemoryGrowCost {
+		NonZeroU32::new(self.memory_grow_cost).map_or(MemoryGrowCost::Free, MemoryGrowCost::Linear)
+	}
+}
+
+/// Transforms a given module into one that charges gas for code to be executed by proxy of an
+/// imported gas metering function.
+///
+/// The output module imports a function "gas" from the specified module with type signature
+/// [i32] -> []. The argument is the amount of gas required to continue execution. The external
+/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
+/// execution of the runtime if the gas usage exceeds some allowed limit.
+///
+/// The body of each function is divided into metered blocks, and the calls to charge gas are
+/// inserted at the beginning of every such block of code. A metered block is defined so that,
+/// unless there is a trap, either all of the instructions are executed or none are. These are
+/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
+/// blocks can be merged into a single metered block. This is the case if any path through the
+/// control flow graph containing one basic block also contains another.
+///
+/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
+/// executed are already paid for, 2) instructions that will not be executed are not charged for
+/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is that
+/// modules instrumented with this metering code may charge gas for instructions not executed in
+/// the event of a trap.
+///
+/// Additionally, each `memory.grow` instruction found in the module is instrumented to first make
+/// a call to charge gas for the additional pages requested. This cannot be done as part of the
+/// block level gas charges as the gas cost is not static and depends on the stack argument to
+/// `memory.grow`.
+///
+/// The above transformations are performed for every function body defined in the module. This
+/// function also rewrites all function indices references by code, table elements, etc., since
+/// the addition of an imported functions changes the indices of module-defined functions.
+///
+/// This routine runs in time linear in the size of the input module.
+///
+/// The function fails if the module contains any operation forbidden by gas rule set, returning
+/// the original module as an Err.
+pub fn inject<R: Rules>(
+	module: elements::Module,
+	rules: &R,
+	gas_module_name: &str,
+) -> Result<elements::Module, elements::Module> {
+	// Injecting gas counting external
+	let mut mbuilder = builder::from_module(module);
+	let import_sig =
+		mbuilder.push_signature(builder::signature().with_param(ValueType::I32).build_sig());
+
+	mbuilder.push_import(
+		builder::import()
+			.module(gas_module_name)
+			.field("gas")
+			.external()
+			.func(import_sig)
+			.build(),
+	);
+
+	// back to plain module
+	let mut module = mbuilder.build();
+
+	// calculate actual function index of the imported definition
+	//    (subtract all imports that are NOT functions)
+
+	let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
+	let total_func = module.functions_space() as u32;
+	let mut need_grow_counter = false;
+	let mut error = false;
+
+	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
+	for section in module.sections_mut() {
+		match section {
+			elements::Section::Code(code_section) =>
+				for func_body in code_section.bodies_mut() {
+					for instruction in func_body.code_mut().elements_mut().iter_mut() {
+						if let Instruction::Call(call_index) = instruction {
+							if *call_index >= gas_func {
+								*call_index += 1
+							}
+						}
+					}
+					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
+						error = true;
+						break
+					}
+					if rules.memory_grow_cost().enabled() &&
+						inject_grow_counter(func_body.code_mut(), total_func) > 0
+					{
+						need_grow_counter = true;
+					}
+				},
+			elements::Section::Export(export_section) => {
+				for export in export_section.entries_mut() {
+					if let elements::Internal::Function(func_index) = export.internal_mut() {
+						if *func_index >= gas_func {
+							*func_index += 1
+						}
+					}
+				}
+			},
+			elements::Section::Element(elements_section) => {
+				// Note that we do not need to check the element type referenced because in the
+				// WebAssembly 1.0 spec, the only allowed element type is funcref.
+				for segment in elements_section.entries_mut() {
+					// update all indirect call addresses initial values
+					for func_index in segment.members_mut() {
+						if *func_index >= gas_func {
+							*func_index += 1
+						}
+					}
+				}
+			},
+			elements::Section::Start(start_idx) =>
+				if *start_idx >= gas_func {
+					*start_idx += 1
+				},
+			_ => {},
+		}
+	}
+
+	if error {
+		return Err(module)
+	}
+
+	if need_grow_counter {
+		Ok(add_grow_counter(module, rules, gas_func))
+	} else {
+		Ok(module)
 	}
 }
 
@@ -40,7 +244,6 @@ pub fn update_call_index(instructions: &mut elements::Instructions, inserted_ind
 /// ```
 ///
 /// The start of the block is `i32.const 1`.
-///
 #[derive(Debug)]
 struct ControlBlock {
 	/// The lowest control stack index corresponding to a forward jump targeted by a br, br_if, or
@@ -65,7 +268,7 @@ struct ControlBlock {
 /// are constructed with the property that, in the absence of any traps, either all instructions in
 /// the block are executed or none are.
 #[derive(Debug)]
-pub(crate) struct MeteredBlock {
+struct MeteredBlock {
 	/// Index of the first instruction (aka `Opcode`) in the block.
 	start_pos: usize,
 	/// Sum of costs of all instructions until end of the block.
@@ -232,12 +435,11 @@ fn add_grow_counter<R: Rules>(
 	rules: &R,
 	gas_func: u32,
 ) -> elements::Module {
-	use crate::rules::MemoryGrowCost;
 	use parity_wasm::elements::Instruction::*;
 
 	let cost = match rules.memory_grow_cost() {
-		None => return module,
-		Some(MemoryGrowCost::Linear(val)) => val.get(),
+		MemoryGrowCost::Free => return module,
+		MemoryGrowCost::Linear(val) => val.get(),
 	};
 
 	let mut b = builder::from_module(module);
@@ -253,7 +455,8 @@ fn add_grow_counter<R: Rules>(
 				GetLocal(0),
 				I32Const(cost as i32),
 				I32Mul,
-				// todo: there should be strong guarantee that it does not return anything on stack?
+				// todo: there should be strong guarantee that it does not return anything on
+				// stack?
 				Call(gas_func),
 				GrowMemory(0),
 				End,
@@ -265,7 +468,7 @@ fn add_grow_counter<R: Rules>(
 	b.build()
 }
 
-pub(crate) fn determine_metered_blocks<R: Rules>(
+fn determine_metered_blocks<R: Rules>(
 	instructions: &elements::Instructions,
 	rules: &R,
 ) -> Result<Vec<MeteredBlock>, ()> {
@@ -339,7 +542,7 @@ pub(crate) fn determine_metered_blocks<R: Rules>(
 	Ok(counter.finalized_blocks)
 }
 
-pub fn inject_counter<R: Rules>(
+fn inject_counter<R: Rules>(
 	instructions: &mut elements::Instructions,
 	rules: &R,
 	gas_func: u32,
@@ -393,133 +596,12 @@ fn insert_metering_calls(
 	Ok(())
 }
 
-/// Transforms a given module into one that charges gas for code to be executed by proxy of an
-/// imported gas metering function.
-///
-/// The output module imports a function "gas" from the specified module with type signature
-/// [i32] -> []. The argument is the amount of gas required to continue execution. The external
-/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
-/// execution of the runtime if the gas usage exceeds some allowed limit.
-///
-/// The body of each function is divided into metered blocks, and the calls to charge gas are
-/// inserted at the beginning of every such block of code. A metered block is defined so that,
-/// unless there is a trap, either all of the instructions are executed or none are. These are
-/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
-/// blocks can be merged into a single metered block. This is the case if any path through the
-/// control flow graph containing one basic block also contains another.
-///
-/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
-/// executed are already paid for, 2) instructions that will not be executed are not charged for
-/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is that
-/// modules instrumented with this metering code may charge gas for instructions not executed in
-/// the event of a trap.
-///
-/// Additionally, each `memory.grow` instruction found in the module is instrumented to first make
-/// a call to charge gas for the additional pages requested. This cannot be done as part of the
-/// block level gas charges as the gas cost is not static and depends on the stack argument to
-/// `memory.grow`.
-///
-/// The above transformations are performed for every function body defined in the module. This
-/// function also rewrites all function indices references by code, table elements, etc., since
-/// the addition of an imported functions changes the indices of module-defined functions.
-///
-/// This routine runs in time linear in the size of the input module.
-///
-/// The function fails if the module contains any operation forbidden by gas rule set, returning
-/// the original module as an Err.
-pub fn inject_gas_counter<R: Rules>(
-	module: elements::Module,
-	rules: &R,
-	gas_module_name: &str,
-) -> Result<elements::Module, elements::Module> {
-	// Injecting gas counting external
-	let mut mbuilder = builder::from_module(module);
-	let import_sig =
-		mbuilder.push_signature(builder::signature().with_param(ValueType::I32).build_sig());
-
-	mbuilder.push_import(
-		builder::import()
-			.module(gas_module_name)
-			.field("gas")
-			.external()
-			.func(import_sig)
-			.build(),
-	);
-
-	// back to plain module
-	let mut module = mbuilder.build();
-
-	// calculate actual function index of the imported definition
-	//    (subtract all imports that are NOT functions)
-
-	let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
-	let total_func = module.functions_space() as u32;
-	let mut need_grow_counter = false;
-	let mut error = false;
-
-	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
-	for section in module.sections_mut() {
-		match section {
-			elements::Section::Code(code_section) =>
-				for func_body in code_section.bodies_mut() {
-					update_call_index(func_body.code_mut(), gas_func);
-					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
-						error = true;
-						break
-					}
-					if rules.memory_grow_cost().is_some() &&
-						inject_grow_counter(func_body.code_mut(), total_func) > 0
-					{
-						need_grow_counter = true;
-					}
-				},
-			elements::Section::Export(export_section) => {
-				for export in export_section.entries_mut() {
-					if let elements::Internal::Function(func_index) = export.internal_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
-					}
-				}
-			},
-			elements::Section::Element(elements_section) => {
-				// Note that we do not need to check the element type referenced because in the
-				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				for segment in elements_section.entries_mut() {
-					// update all indirect call addresses initial values
-					for func_index in segment.members_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
-					}
-				}
-			},
-			elements::Section::Start(start_idx) =>
-				if *start_idx >= gas_func {
-					*start_idx += 1
-				},
-			_ => {},
-		}
-	}
-
-	if error {
-		return Err(module)
-	}
-
-	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func))
-	} else {
-		Ok(module)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rules;
 	use parity_wasm::{builder, elements, elements::Instruction::*, serialize};
 
-	pub fn get_function_body(
+	fn get_function_body(
 		module: &elements::Module,
 		index: usize,
 	) -> Option<&[elements::Instruction]> {
@@ -547,9 +629,7 @@ mod tests {
 			.build()
 			.build();
 
-		let injected_module =
-			inject_gas_counter(module, &rules::Set::default().with_grow_cost(10000), "env")
-				.unwrap();
+		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000), "env").unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -583,7 +663,7 @@ mod tests {
 			.build()
 			.build();
 
-		let injected_module = inject_gas_counter(module, &rules::Set::default(), "env").unwrap();
+		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -634,7 +714,7 @@ mod tests {
 			.build()
 			.build();
 
-		let injected_module = inject_gas_counter(module, &rules::Set::default(), "env").unwrap();
+		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 1).unwrap(),
@@ -660,31 +740,6 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn forbidden() {
-		let module = builder::module()
-			.global()
-			.value_type()
-			.i32()
-			.build()
-			.function()
-			.signature()
-			.param()
-			.i32()
-			.build()
-			.body()
-			.with_instructions(elements::Instructions::new(vec![F32Const(555555), End]))
-			.build()
-			.build()
-			.build();
-
-		let rules = rules::Set::default().with_forbidden_floats();
-
-		if inject_gas_counter(module, &rules, "env").is_ok() {
-			panic!("Should be error because of the forbidden operation")
-		}
-	}
-
 	fn parse_wat(source: &str) -> elements::Module {
 		let module_bytes = wabt::Wat2Wasm::new()
 			.validate(false)
@@ -700,9 +755,8 @@ mod tests {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
 
-				let injected_module =
-					inject_gas_counter(input_module, &rules::Set::default(), "env")
-						.expect("inject_gas_counter call failed");
+				let injected_module = inject(input_module, &ConstantCostRules::default(), "env")
+					.expect("inject_gas_counter call failed");
 
 				let actual_func_body = get_function_body(&injected_module, 0)
 					.expect("injected module must have a function body");

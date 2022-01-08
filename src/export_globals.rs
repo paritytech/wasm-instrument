@@ -1,13 +1,12 @@
+use alloc::{format, vec::Vec};
 use parity_wasm::elements;
 
-use crate::optimizer::{export_section, global_section};
-
-/// Export all declared mutable globals.
+/// Export all declared mutable globals as `prefix_index`.
 ///
 /// This will export all internal mutable globals under the name of
-/// concat(`prefix`, i) where i is the index inside the range of
-/// [0..<total number of internal mutable globals>].
-pub fn export_mutable_globals(module: &mut elements::Module, prefix: impl Into<String>) {
+/// concat(`prefix`, `"_"`, `i`) where i is the index inside the range of
+/// [0..total number of internal mutable globals].
+pub fn export_mutable_globals(module: &mut elements::Module, prefix: &str) {
 	let exports = global_section(module)
 		.map(|section| {
 			section
@@ -33,7 +32,6 @@ pub fn export_mutable_globals(module: &mut elements::Module, prefix: impl Into<S
 			.push(elements::Section::Export(elements::ExportSection::default()));
 	}
 
-	let prefix: String = prefix.into();
 	for (symbol_index, export) in exports.into_iter().enumerate() {
 		let new_entry = elements::ExportEntry::new(
 			format!("{}_{}", prefix, symbol_index),
@@ -46,6 +44,24 @@ pub fn export_mutable_globals(module: &mut elements::Module, prefix: impl Into<S
 			.entries_mut()
 			.push(new_entry);
 	}
+}
+
+fn export_section(module: &mut elements::Module) -> Option<&mut elements::ExportSection> {
+	for section in module.sections_mut() {
+		if let elements::Section::Export(sect) = section {
+			return Some(sect)
+		}
+	}
+	None
+}
+
+fn global_section(module: &mut elements::Module) -> Option<&mut elements::GlobalSection> {
+	for section in module.sections_mut() {
+		if let elements::Section::Global(sect) = section {
+			return Some(sect)
+		}
+	}
+	None
 }
 
 #[cfg(test)]
