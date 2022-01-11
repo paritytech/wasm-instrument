@@ -5,7 +5,7 @@ mainly useful for wasm based block chains and smart contracts.
 
 ## Provided functionality
 
-This is a non exhaustive list of provided functionality. Please check out the documentation for details.
+This is a non exhaustive list of provided functionality. Please check out the [documentation](https://docs.rs/wasm-instrument/latest/wasm_instrument/) for details.
 
 ### Gas Metering
 
