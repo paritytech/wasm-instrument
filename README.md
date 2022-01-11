@@ -17,7 +17,7 @@ Neither the wasm standard nor any sufficiently complex execution engine specifie
 
 This is the kind of indeterminism that can lead to consensus failures when used in a blockchain context.
 
-To address this issue we can inject some code that meters the stack height at runtime and aborts the execution when it reaches a predefined limit. Choosing this limit suffciently small so that it is smaller than any what any reasonbly written execution engine would support solves the issue: All execution engines would reach the injected limit before hitting any implementation specific limitation.
+To address this issue we can inject some code that meters the stack height at runtime and aborts the execution when it reaches a predefined limit. Choosing this limit suffciently small so that it is smaller than what any reasonably parameterized execution engine would support solves the issue: All execution engines would reach the injected limit before hitting any implementation specific limitation.
 
 ## License
 
