@@ -472,7 +472,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 0 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
