@@ -3,7 +3,7 @@
 	(import "env" "memory" (memory 1 1))
 
 	(start $start)
-	(func $start (export "exported_start")
+	(func $start
 		(local i32)
 	)
 	(func (export "call")

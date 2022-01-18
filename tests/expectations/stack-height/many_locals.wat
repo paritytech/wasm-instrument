@@ -4,7 +4,7 @@
     (local i64 i64 i32))
   (func (;1;) (type 0)
     global.get 0
-    i32.const 3
+    i32.const 5
     i32.add
     global.set 0
     global.get 0
@@ -15,7 +15,7 @@
     end
     call 0
     global.get 0
-    i32.const 3
+    i32.const 5
     i32.sub
     global.set 0)
   (global (;0;) (mut i32) (i32.const 0)))

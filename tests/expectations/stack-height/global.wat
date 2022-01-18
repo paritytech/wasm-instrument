@@ -17,7 +17,7 @@
     local.get 1
     local.get 0
     global.get 1
-    i32.const 2
+    i32.const 4
     i32.add
     global.set 1
     global.get 1
@@ -28,7 +28,7 @@
     end
     call 1
     global.get 1
-    i32.const 2
+    i32.const 4
     i32.sub
     global.set 1
     drop)
@@ -36,7 +36,7 @@
     local.get 0
     local.get 1
     global.get 1
-    i32.const 2
+    i32.const 4
     i32.add
     global.set 1
     global.get 1
@@ -47,7 +47,7 @@
     end
     call 1
     global.get 1
-    i32.const 2
+    i32.const 4
     i32.sub
     global.set 1)
   (global (;0;) (mut i32) (i32.const 1))

@@ -92,6 +92,7 @@ mod stack_height {
 	def_stack_height_test!(global);
 	def_stack_height_test!(imports);
 	def_stack_height_test!(many_locals);
+	def_stack_height_test!(empty_functions);
 }
 
 mod gas {

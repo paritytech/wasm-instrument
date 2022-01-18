@@ -5,6 +5,12 @@ use parity_wasm::elements::{self, BlockType, Type};
 #[cfg(feature = "sign_ext")]
 use parity_wasm::elements::SignExtInstruction;
 
+// The cost in stack items that should be charged per call of a function. This is
+// is a static cost that is added to each function call. This makes sense because even
+// if a function does not use any parameters or locals some stack space on the host
+// machine might be consumed to hold some context.
+const ACTIVATION_FRAME_COST: u32 = 2;
+
 /// Control stack frame.
 #[derive(Debug)]
 struct Frame {
@@ -36,7 +42,7 @@ struct Stack {
 
 impl Stack {
 	fn new() -> Stack {
-		Stack { height: 0, control_stack: Vec::new() }
+		Stack { height: ACTIVATION_FRAME_COST, control_stack: Vec::new() }
 	}
 
 	/// Returns current height of the value stack.
@@ -431,7 +437,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 3);
+		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -448,7 +454,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1);
+		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -466,7 +472,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 0);
+		assert_eq!(height, ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -501,7 +507,7 @@ mod tests {
 		.expect("Failed to deserialize the module");
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 2);
+		assert_eq!(height, 2 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -525,7 +531,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1);
+		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -547,7 +553,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1);
+		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
@@ -573,6 +579,6 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 3);
+		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
 	}
 }
