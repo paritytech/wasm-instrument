@@ -82,7 +82,7 @@ pub fn generate_thunks(
 		for (arg_idx, _) in thunk.signature.params().iter().enumerate() {
 			thunk_body.push(elements::Instruction::GetLocal(arg_idx as u32));
 		}
-		thunk_body.extend(instrumented_call.iter().cloned());
+		thunk_body.extend_from_slice(&instrumented_call);
 		thunk_body.push(elements::Instruction::End);
 
 		// TODO: Don't generate a signature, but find an existing one.
