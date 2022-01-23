@@ -11,11 +11,20 @@ categories = ["wasm", "no-std"]
 repository = "https://github.com/paritytech/wasm-instrument"
 include = ["src/**/*", "LICENSE-*", "README.md"]
 
+[[bench]]
+name = "benches"
+harness = false
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+
 [dependencies]
 parity-wasm = { version = "0.42", default-features = false }
 
 [dev-dependencies]
 binaryen = "0.12"
+criterion = "0.3"
 diff = "0.1"
 rand = "0.8"
 wabt = "0.10"
