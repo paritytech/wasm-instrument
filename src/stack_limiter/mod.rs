@@ -351,16 +351,13 @@ mod tests {
 	use parity_wasm::elements;
 
 	fn parse_wat(source: &str) -> elements::Module {
-		elements::deserialize_buffer(&wabt::wat2wasm(source).expect("Failed to wat2wasm"))
+		elements::deserialize_buffer(&wat::parse_str(source).expect("Failed to wat2wasm"))
 			.expect("Failed to deserialize the module")
 	}
 
 	fn validate_module(module: elements::Module) {
 		let binary = elements::serialize(module).expect("Failed to serialize");
-		wabt::Module::read_binary(&binary, &Default::default())
-			.expect("Wabt failed to read final binary")
-			.validate()
-			.expect("Invalid module");
+		wasmparser::validate(&binary).expect("Invalid module");
 	}
 
 	#[test]
