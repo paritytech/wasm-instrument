@@ -286,7 +286,7 @@ fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(),
 					ctx.stack_height_global_idx(),
 					ctx.stack_limit()
 				);
-				new_instrs.extend(new_seq);
+				new_instrs.extend_from_slice(&new_seq);
 				true
 			} else {
 				false
