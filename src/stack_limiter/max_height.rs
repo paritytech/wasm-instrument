@@ -415,7 +415,7 @@ mod tests {
 	use parity_wasm::elements;
 
 	fn parse_wat(source: &str) -> elements::Module {
-		elements::deserialize_buffer(&wabt::wat2wasm(source).expect("Failed to wat2wasm"))
+		elements::deserialize_buffer(&wat::parse_str(source).expect("Failed to wat2wasm"))
 			.expect("Failed to deserialize the module")
 	}
 
@@ -477,7 +477,8 @@ mod tests {
 
 	#[test]
 	fn yet_another_test() {
-		const SOURCE: &str = r#"
+		let module = parse_wat(
+			r#"
 (module
   (memory 0)
   (func
@@ -496,15 +497,8 @@ mod tests {
 	i32.const 2
   )
 )
-"#;
-		let module = elements::deserialize_buffer(
-			wabt::Wat2Wasm::new()
-				.validate(false)
-				.convert(SOURCE)
-				.expect("Failed to wat2wasm")
-				.as_ref(),
-		)
-		.expect("Failed to deserialize the module");
+"#,
+		);
 
 		let height = compute(0, &module).unwrap();
 		assert_eq!(height, 2 + ACTIVATION_FRAME_COST);

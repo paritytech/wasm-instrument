@@ -2,20 +2,20 @@
   (type (;0;) (func))
   (type (;1;) (func (param i32 i32) (result i32)))
   (type (;2;) (func (param i32)))
-  (import "env" "foo" (func (;0;) (type 0)))
-  (func (;1;) (type 1) (param i32 i32) (result i32)
+  (import "env" "foo" (func $foo (type 0)))
+  (func $i32.add (type 1) (param i32 i32) (result i32)
     local.get 0
     local.get 1
     i32.add)
-  (func (;2;) (type 2) (param i32)
-    (local i32)
-    global.get 0
+  (func (;2;) (type 2) (param $arg i32)
+    (local $tmp i32)
+    global.get $counter
     i32.const 1
     i32.add
-    local.tee 1
-    global.set 0
-    local.get 1
-    local.get 0
+    local.tee $tmp
+    global.set $counter
+    local.get $tmp
+    local.get $arg
     global.get 1
     i32.const 4
     i32.add
@@ -26,7 +26,7 @@
     if  ;; label = @1
       unreachable
     end
-    call 1
+    call $i32.add
     global.get 1
     i32.const 4
     i32.sub
@@ -45,11 +45,11 @@
     if  ;; label = @1
       unreachable
     end
-    call 1
+    call $i32.add
     global.get 1
     i32.const 4
     i32.sub
     global.set 1)
-  (global (;0;) (mut i32) (i32.const 1))
-  (global (;1;) (mut i32) (i32.const 0))
+  (global $counter (mut i32) i32.const 1)
+  (global (;1;) (mut i32) i32.const 0)
   (export "i32.add" (func 3)))

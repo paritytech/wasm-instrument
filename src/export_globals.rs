@@ -71,10 +71,8 @@ mod tests {
 	use parity_wasm::elements;
 
 	fn parse_wat(source: &str) -> elements::Module {
-		let module_bytes = wabt::Wat2Wasm::new()
-			.validate(true)
-			.convert(source)
-			.expect("failed to parse module");
+		let module_bytes = wat::parse_str(source).unwrap();
+		wasmparser::validate(&module_bytes).unwrap();
 		elements::deserialize_buffer(module_bytes.as_ref()).expect("failed to parse module")
 	}
 
@@ -93,7 +91,19 @@ mod tests {
 				let expected_bytes = elements::serialize(expected_module)
 					.expect("injected module must have a function body");
 
-				assert_eq!(actual_bytes, expected_bytes);
+				let actual_wat = wasmprinter::print_bytes(actual_bytes).unwrap();
+				let expected_wat = wasmprinter::print_bytes(expected_bytes).unwrap();
+
+				if actual_wat != expected_wat {
+					for diff in diff::lines(&expected_wat, &actual_wat) {
+						match diff {
+							diff::Result::Left(l) => println!("-{}", l),
+							diff::Result::Both(l, _) => println!(" {}", l),
+							diff::Result::Right(r) => println!("+{}", r),
+						}
+					}
+					panic!()
+				}
 			}
 		};
 	}

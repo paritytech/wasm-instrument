@@ -613,21 +613,15 @@ mod tests {
 
 	#[test]
 	fn simple_grow() {
-		let module = builder::module()
-			.global()
-			.value_type()
-			.i32()
-			.build()
-			.function()
-			.signature()
-			.param()
-			.i32()
-			.build()
-			.body()
-			.with_instructions(elements::Instructions::new(vec![GetGlobal(0), GrowMemory(0), End]))
-			.build()
-			.build()
-			.build();
+		let module = parse_wat(
+			r#"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)"#,
+		);
 
 		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000), "env").unwrap();
 
@@ -642,26 +636,20 @@ mod tests {
 		);
 
 		let binary = serialize(injected_module).expect("serialization failed");
-		wabt::wasm2wat(&binary).unwrap();
+		wasmparser::validate(&binary).unwrap();
 	}
 
 	#[test]
 	fn grow_no_gas_no_track() {
-		let module = builder::module()
-			.global()
-			.value_type()
-			.i32()
-			.build()
-			.function()
-			.signature()
-			.param()
-			.i32()
-			.build()
-			.body()
-			.with_instructions(elements::Instructions::new(vec![GetGlobal(0), GrowMemory(0), End]))
-			.build()
-			.build()
-			.build();
+		let module = parse_wat(
+			r"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)",
+		);
 
 		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
@@ -673,7 +661,7 @@ mod tests {
 		assert_eq!(injected_module.functions_space(), 2);
 
 		let binary = serialize(injected_module).expect("serialization failed");
-		wabt::wasm2wat(&binary).unwrap();
+		wasmparser::validate(&binary).unwrap();
 	}
 
 	#[test]
@@ -741,11 +729,8 @@ mod tests {
 	}
 
 	fn parse_wat(source: &str) -> elements::Module {
-		let module_bytes = wabt::Wat2Wasm::new()
-			.validate(false)
-			.convert(source)
-			.expect("failed to parse module");
-		elements::deserialize_buffer(module_bytes.as_ref()).expect("failed to parse module")
+		let module_bytes = wat::parse_str(source).unwrap();
+		elements::deserialize_buffer(module_bytes.as_ref()).unwrap()
 	}
 
 	macro_rules! test_gas_counter_injection {

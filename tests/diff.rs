@@ -5,6 +5,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 use wasm_instrument as instrument;
+use wasmparser::validate;
 
 fn slurp<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 	let mut f = fs::File::open(path)?;
@@ -16,11 +17,6 @@ fn slurp<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 fn dump<P: AsRef<Path>>(path: P, buf: &[u8]) -> io::Result<()> {
 	let mut f = fs::File::create(path)?;
 	f.write_all(buf)?;
-	Ok(())
-}
-
-fn validate_wasm(binary: &[u8]) -> Result<(), wabt::Error> {
-	wabt::Module::read_binary(&binary, &Default::default())?.validate()?;
 	Ok(())
 }
 
@@ -36,17 +32,17 @@ fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: 
 	expected_path.push(test_dir);
 	expected_path.push(name);
 
-	let fixture_wat = slurp(&fixture_path).expect("Failed to read fixture");
-	let fixture_wasm = wabt::wat2wasm(fixture_wat).expect("Failed to read fixture");
-	validate_wasm(&fixture_wasm).expect("Fixture is invalid");
+	let fixture_wasm = wat::parse_file(&fixture_path).expect("Failed to read fixture");
+	validate(&fixture_wasm).expect("Fixture is invalid");
 
 	let expected_wat = slurp(&expected_path).unwrap_or_default();
 	let expected_wat = std::str::from_utf8(&expected_wat).expect("Failed to decode expected wat");
 
 	let actual_wasm = test(fixture_wasm.as_ref());
-	validate_wasm(&actual_wasm).expect("Result module is invalid");
+	validate(&actual_wasm).expect("Result module is invalid");
 
-	let actual_wat = wabt::wasm2wat(&actual_wasm).expect("Failed to convert result wasm to wat");
+	let actual_wat =
+		wasmprinter::print_bytes(&actual_wasm).expect("Failed to convert result wasm to wat");
 
 	if actual_wat != expected_wat {
 		println!("difference!");
