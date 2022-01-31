@@ -21,14 +21,15 @@ fn dump<P: AsRef<Path>>(path: P, buf: &[u8]) -> io::Result<()> {
 }
 
 fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: F) {
-	// FIXME: not going to work on windows?
-	let mut fixture_path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/",));
+	let mut fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	fixture_path.push("tests");
+	fixture_path.push("fixtures");
 	fixture_path.push(test_dir);
 	fixture_path.push(name);
 
-	// FIXME: not going to work on windows?
-	let mut expected_path =
-		PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/expectations/"));
+	let mut expected_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	expected_path.push("tests");
+	expected_path.push("expectations");
 	expected_path.push(test_dir);
 	expected_path.push(name);
 
