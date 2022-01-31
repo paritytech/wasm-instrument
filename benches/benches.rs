@@ -27,20 +27,20 @@ where
 		let entry = entry.unwrap();
 		let bytes = read(&entry.path()).unwrap();
 		group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
-		group.bench_function(entry.file_name().to_str().unwrap(), |bench| {
-			bench.iter(|| f(deserialize_buffer(&bytes).unwrap()))
+		group.bench_with_input(entry.file_name().to_str().unwrap(), &bytes, |bench, input| {
+			bench.iter(|| f(deserialize_buffer(input).unwrap()))
 		});
 	}
 }
 
-pub fn gas_metering(c: &mut Criterion) {
+fn gas_metering(c: &mut Criterion) {
 	let mut group = c.benchmark_group("Gas Metering");
 	any_fixture(&mut group, |module| {
 		gas_metering::inject(module, &gas_metering::ConstantCostRules::default(), "env").unwrap();
 	});
 }
 
-pub fn stack_height_limiter(c: &mut Criterion) {
+fn stack_height_limiter(c: &mut Criterion) {
 	let mut group = c.benchmark_group("Stack Height Limiter");
 	any_fixture(&mut group, |module| {
 		inject_stack_limiter(module, 128).unwrap();
