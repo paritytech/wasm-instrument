@@ -26,4 +26,6 @@
       i32.add
       local.set 1
     end
-    local.get 1))
+    local.get 1
+  )
+)

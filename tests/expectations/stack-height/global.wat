@@ -6,7 +6,8 @@
   (func $i32.add (type 1) (param i32 i32) (result i32)
     local.get 0
     local.get 1
-    i32.add)
+    i32.add
+  )
   (func (;2;) (type 2) (param $arg i32)
     (local $tmp i32)
     global.get $counter
@@ -31,7 +32,8 @@
     i32.const 4
     i32.sub
     global.set 1
-    drop)
+    drop
+  )
   (func (;3;) (type 1) (param i32 i32) (result i32)
     local.get 0
     local.get 1
@@ -49,7 +51,9 @@
     global.get 1
     i32.const 4
     i32.sub
-    global.set 1)
+    global.set 1
+  )
   (global $counter (mut i32) i32.const 1)
   (global (;1;) (mut i32) i32.const 0)
-  (export "i32.add" (func 3)))
+  (export "i32.add" (func 3))
+)

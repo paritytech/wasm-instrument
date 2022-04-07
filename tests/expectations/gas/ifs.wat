@@ -17,4 +17,6 @@
       call 0
       local.get 0
       i32.popcnt
-    end))
+    end
+  )
+)

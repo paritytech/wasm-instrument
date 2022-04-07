@@ -21,11 +21,13 @@
     i32.const 4
     i32.sub
     global.set 0
-    drop)
+    drop
+  )
   (func $i32.add (type 2) (param i32 i32) (result i32)
     local.get 0
     local.get 1
-    i32.add)
+    i32.add
+  )
   (func (;3;) (type 1) (param i32)
     local.get 0
     global.get 0
@@ -42,7 +44,8 @@
     global.get 0
     i32.const 4
     i32.sub
-    global.set 0)
+    global.set 0
+  )
   (func (;4;) (type 2) (param i32 i32) (result i32)
     local.get 0
     local.get 1
@@ -60,8 +63,10 @@
     global.get 0
     i32.const 4
     i32.sub
-    global.set 0)
+    global.set 0
+  )
   (table (;0;) 10 funcref)
   (global (;0;) (mut i32) i32.const 0)
   (export "i32.add" (func 4))
-  (elem (;0;) (i32.const 0) func $foo 3 4))
+  (elem (;0;) (i32.const 0) func $foo 3 4)
+)
