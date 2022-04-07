@@ -1,7 +1,8 @@
 (module
   (type (;0;) (func))
   (func $one-group-many-locals (type 0)
-    (local i64 i64 i32))
+    (local i64 i64 i32)
+  )
   (func $main (type 0)
     global.get 0
     i32.const 5
@@ -17,5 +18,7 @@
     global.get 0
     i32.const 5
     i32.sub
-    global.set 0)
-  (global (;0;) (mut i32) i32.const 0))
+    global.set 0
+  )
+  (global (;0;) (mut i32) i32.const 0)
+)

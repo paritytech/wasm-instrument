@@ -28,7 +28,7 @@ criterion = "0.3"
 diff = "0.1"
 rand = "0.8"
 wat = "1"
-wasmparser = "0.82"
+wasmparser = "0.84"
 wasmprinter = "0.2"
 
 [features]

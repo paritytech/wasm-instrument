@@ -15,10 +15,13 @@
         i32.const 123
         drop
       end
-    end)
+    end
+  )
   (func (;2;) (type 0)
     i32.const 1
     call 0
     block  ;; label = @1
-    end)
-  (export "simple" (func 1)))
+    end
+  )
+  (export "simple" (func 1))
+)

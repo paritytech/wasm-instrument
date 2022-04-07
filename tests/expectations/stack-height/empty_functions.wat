@@ -15,7 +15,8 @@
     global.get 0
     i32.const 2
     i32.sub
-    global.set 0)
+    global.set 0
+  )
   (func (;1;) (type 0)
     global.get 0
     i32.const 2
@@ -31,7 +32,8 @@
     global.get 0
     i32.const 2
     i32.sub
-    global.set 0)
+    global.set 0
+  )
   (func (;2;) (type 0)
     global.get 0
     i32.const 2
@@ -47,6 +49,8 @@
     global.get 0
     i32.const 2
     i32.sub
-    global.set 0)
+    global.set 0
+  )
   (global (;0;) (mut i32) i32.const 0)
-  (export "main" (func 2)))
+  (export "main" (func 2))
+)
