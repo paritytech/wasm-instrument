@@ -35,3 +35,4 @@ wasmprinter = "0.2"
 default = ["std"]
 std = ["parity-wasm/std"]
 sign_ext = ["parity-wasm/sign_ext"]
+bulk = ["parity-wasm/bulk"]

@@ -5,6 +5,9 @@ use parity_wasm::elements::{self, BlockType, Type};
 #[cfg(feature = "sign_ext")]
 use parity_wasm::elements::SignExtInstruction;
 
+#[cfg(feature = "bulk")]
+use parity_wasm::elements::BulkInstruction;
+
 // The cost in stack items that should be charged per call of a function. This is
 // is a static cost that is added to each function call. This makes sense because even
 // if a function does not use any parameters or locals some stack space on the host
@@ -402,6 +405,17 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
 			},
+
+			#[cfg(feature = "bulk")]
+			Bulk(BulkInstruction::MemoryInit(_)) |
+			Bulk(BulkInstruction::MemoryCopy) |
+			Bulk(BulkInstruction::MemoryFill) |
+			Bulk(BulkInstruction::TableInit(_)) |
+			Bulk(BulkInstruction::TableCopy) => {
+				stack.pop_values(3)?;
+			},
+			#[cfg(feature = "bulk")]
+			Bulk(BulkInstruction::MemoryDrop(_)) | Bulk(BulkInstruction::TableDrop(_)) => {},
 		}
 		pc += 1;
 	}
