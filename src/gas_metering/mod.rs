@@ -11,7 +11,7 @@ use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
 	builder,
-	elements::{self, Instruction, ValueType},
+	elements::{self, IndexMap, Instruction, ValueType},
 };
 
 /// An interface that describes instruction costs.
@@ -129,7 +129,8 @@ impl Rules for ConstantCostRules {
 ///
 /// The above transformations are performed for every function body defined in the module. This
 /// function also rewrites all function indices references by code, table elements, etc., since
-/// the addition of an imported functions changes the indices of module-defined functions.
+/// the addition of an imported functions changes the indices of module-defined functions. If the
+/// the module has a NameSection, added by calling `parse_names`, the indices will also be updated.
 ///
 /// This routine runs in time linear in the size of the input module.
 ///
@@ -211,6 +212,17 @@ pub fn inject<R: Rules>(
 			elements::Section::Start(start_idx) =>
 				if *start_idx >= gas_func {
 					*start_idx += 1
+				},
+			elements::Section::Name(s) =>
+				for functions in s.functions_mut() {
+					*functions.names_mut() =
+						IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
+							if idx >= gas_func {
+								idx += 1;
+							}
+
+							(idx, name.clone())
+						}));
 				},
 			_ => {},
 		}

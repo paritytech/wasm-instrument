@@ -1,3 +1,4 @@
+use parity_wasm::elements::Module;
 use std::{
 	fs,
 	io::{self, Read, Write},
@@ -101,8 +102,10 @@ mod gas {
 				run_diff_test("gas", concat!(stringify!($name), ".wat"), |input| {
 					let rules = instrument::gas_metering::ConstantCostRules::default();
 
-					let module =
+					let module: Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
+					let module = module.parse_names().expect("Failed to parse names");
+
 					let instrumented = instrument::gas_metering::inject(module, &rules, "env")
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")

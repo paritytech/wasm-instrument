@@ -2,7 +2,7 @@
   (type (;0;) (func))
   (type (;1;) (func (param i32)))
   (type (;2;) (func (param i32 i32) (result i32)))
-  (import "env" "foo" (func $foo (type 0)))
+  (import "env" "foo" (func $foo (;0;) (type 0)))
   (func (;1;) (type 1) (param i32)
     local.get 0
     i32.const 0
@@ -23,7 +23,7 @@
     global.set 0
     drop
   )
-  (func $i32.add (type 2) (param i32 i32) (result i32)
+  (func $i32.add (;2;) (type 2) (param i32 i32) (result i32)
     local.get 0
     local.get 1
     i32.add

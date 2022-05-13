@@ -1,6 +1,6 @@
 [package]
 name = "wasm-instrument"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.56.1"
 authors = ["Parity Technologies <admin@parity.io>"]
@@ -20,7 +20,7 @@ lto = "fat"
 codegen-units = 1
 
 [dependencies]
-parity-wasm = { version = "0.42", default-features = false }
+parity-wasm = { version = "0.45", default-features = false }
 
 [dev-dependencies]
 binaryen = "0.12"
