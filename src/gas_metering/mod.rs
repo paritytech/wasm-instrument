@@ -11,8 +11,9 @@ use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
 	builder,
-	elements::{self, Instruction, ValueType},
+	elements::{self, FunctionNameSubsection, Instruction, NameSection, Serialize, ValueType},
 };
+use wasmparser::{Name, NameSectionReader};
 
 /// An interface that describes instruction costs.
 pub trait Rules {
@@ -168,7 +169,7 @@ pub fn inject<R: Rules>(
 	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
 	for section in module.sections_mut() {
 		match section {
-			elements::Section::Code(code_section) =>
+			elements::Section::Code(code_section) => {
 				for func_body in code_section.bodies_mut() {
 					for instruction in func_body.code_mut().elements_mut().iter_mut() {
 						if let Instruction::Call(call_index) = instruction {
@@ -179,14 +180,15 @@ pub fn inject<R: Rules>(
 					}
 					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
 						error = true;
-						break
+						break;
 					}
-					if rules.memory_grow_cost().enabled() &&
-						inject_grow_counter(func_body.code_mut(), total_func) > 0
+					if rules.memory_grow_cost().enabled()
+						&& inject_grow_counter(func_body.code_mut(), total_func) > 0
 					{
 						need_grow_counter = true;
 					}
-				},
+				}
+			},
 			elements::Section::Export(export_section) => {
 				for export in export_section.entries_mut() {
 					if let elements::Internal::Function(func_index) = export.internal_mut() {
@@ -208,16 +210,74 @@ pub fn inject<R: Rules>(
 					}
 				}
 			},
-			elements::Section::Start(start_idx) =>
+			elements::Section::Start(start_idx) => {
 				if *start_idx >= gas_func {
 					*start_idx += 1
-				},
+				}
+			},
+			elements::Section::Custom(section) => {
+				if section.name() != "name" {
+					continue;
+				}
+
+				let mut ns = FunctionNameSubsection::default();
+				let names = ns.names_mut();
+
+				let x = match NameSectionReader::new(section.payload(), 0)
+					.and_then(|mut reader| reader.read())
+				{
+					Err(_) => {
+						error = true;
+						break;
+					},
+					Ok(name) => name,
+				};
+
+				if let Name::Function(name_map) = x {
+					let mut map = match name_map.get_map() {
+						Err(_) => {
+							error = true;
+							break;
+						},
+						Ok(map) => map,
+					};
+
+					let count = map.get_count();
+
+					for idx in 0..count {
+						let name = match map.read() {
+							Err(_) => {
+								error = true;
+								break;
+							},
+							Ok(naming) => naming.name.to_string(),
+						};
+
+						if idx >= gas_func {
+							names.insert(idx + 1, name);
+						} else {
+							names.insert(idx, name);
+						}
+					}
+
+					let ns = NameSection::new(None, Some(ns), None);
+
+					*section.payload_mut() = vec![];
+					match ns.serialize(section.payload_mut()) {
+						Err(_) => {
+							error = true;
+							break;
+						},
+						Ok(_) => {},
+					}
+				};
+			},
 			_ => {},
 		}
 	}
 
 	if error {
-		return Err(module)
+		return Err(module);
 	}
 
 	if need_grow_counter {
@@ -316,7 +376,7 @@ impl Counter {
 		let closing_control_index = self.stack.len();
 
 		if self.stack.is_empty() {
-			return Ok(())
+			return Ok(());
 		}
 
 		// Update the lowest_forward_br_target for the control block now on top of the stack.
@@ -364,7 +424,7 @@ impl Counter {
 			let prev_metered_block = &mut prev_control_block.active_metered_block;
 			if closing_metered_block.start_pos == prev_metered_block.start_pos {
 				prev_metered_block.cost += closing_metered_block.cost;
-				return Ok(())
+				return Ok(());
 			}
 		}
 
@@ -388,7 +448,7 @@ impl Counter {
 				target_block.is_loop
 			};
 			if target_is_loop {
-				continue
+				continue;
 			}
 
 			let control_block = self.stack.last_mut().ok_or(())?;
@@ -590,7 +650,7 @@ fn insert_metering_calls(
 	}
 
 	if block_iter.next().is_some() {
-		return Err(())
+		return Err(());
 	}
 
 	Ok(())
