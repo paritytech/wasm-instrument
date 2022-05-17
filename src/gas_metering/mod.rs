@@ -11,9 +11,12 @@ use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
 	builder,
-	elements::{self, FunctionNameSubsection, Instruction, NameSection, Serialize, ValueType},
+	elements::{
+		self, CustomSection, FunctionNameSubsection, IndexMap, Instruction, LocalNameSubsection,
+		Module, ModuleNameSubsection, NameSection, Serialize, ValueType,
+	},
 };
-use wasmparser::{Name, NameSectionReader};
+use wasmparser::{BinaryReaderError, Name, NameSectionReader};
 
 /// An interface that describes instruction costs.
 pub trait Rules {
@@ -156,7 +159,7 @@ pub fn inject<R: Rules>(
 	);
 
 	// back to plain module
-	let mut module = mbuilder.build();
+	let module = mbuilder.build();
 
 	// calculate actual function index of the imported definition
 	//    (subtract all imports that are NOT functions)
@@ -165,6 +168,8 @@ pub fn inject<R: Rules>(
 	let total_func = module.functions_space() as u32;
 	let mut need_grow_counter = false;
 	let mut error = false;
+
+	let mut module = try_parse_names(module, gas_func)?;
 
 	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
 	for section in module.sections_mut() {
@@ -215,63 +220,12 @@ pub fn inject<R: Rules>(
 					*start_idx += 1
 				}
 			},
-			elements::Section::Custom(section) => {
-				if section.name() != "name" {
-					continue;
-				}
-
-				let mut ns = FunctionNameSubsection::default();
-				let names = ns.names_mut();
-
-				let x = match NameSectionReader::new(section.payload(), 0)
-					.and_then(|mut reader| reader.read())
-				{
-					Err(_) => {
-						error = true;
-						break;
-					},
-					Ok(name) => name,
-				};
-
-				if let Name::Function(name_map) = x {
-					let mut map = match name_map.get_map() {
-						Err(_) => {
-							error = true;
-							break;
-						},
-						Ok(map) => map,
-					};
-
-					let count = map.get_count();
-
-					for idx in 0..count {
-						let name = match map.read() {
-							Err(_) => {
-								error = true;
-								break;
-							},
-							Ok(naming) => naming.name.to_string(),
-						};
-
-						if idx >= gas_func {
-							names.insert(idx + 1, name);
-						} else {
-							names.insert(idx, name);
-						}
-					}
-
-					let ns = NameSection::new(None, Some(ns), None);
-
-					*section.payload_mut() = vec![];
-					match ns.serialize(section.payload_mut()) {
-						Err(_) => {
-							error = true;
-							break;
-						},
-						Ok(_) => {},
-					}
-				};
+			elements::Section::Name(name_section) => {
+				name_section.functions_mut().as_mut().map(|name_subsection| {
+					name_subsection.names_mut().iter().for_each(|(ref mut idx, _)| *idx += 1)
+				});
 			},
+
 			_ => {},
 		}
 	}
@@ -285,6 +239,94 @@ pub fn inject<R: Rules>(
 	} else {
 		Ok(module)
 	}
+}
+
+fn try_parse_names(module: Module, gas_func_index: u32) -> Result<Module, Module> {
+	let module = match module.parse_names() {
+		Ok(module) => module,
+		Err((_, mut module)) => {
+			match module.sections_mut().into_iter().find_map(|s| match s {
+				elements::Section::Custom(section) if section.name().eq("name") => Some(section),
+				_ => None,
+			}) {
+				Some(custom_section) => {
+					let name_section = parse_name_section(custom_section, gas_func_index).unwrap();
+
+					*custom_section.payload_mut() = vec![];
+					name_section.serialize(custom_section.payload_mut()).unwrap();
+				},
+				None => return Ok(module),
+			}
+
+			module.parse_names().map_err(|(_, module)| module)?
+		},
+	};
+
+	Ok(module)
+}
+
+fn parse_name_section(
+	custom_section: &mut CustomSection,
+	gas_func: u32,
+) -> Result<NameSection, BinaryReaderError> {
+	let x = NameSectionReader::new(&custom_section.payload(), 0)?;
+	let mut name_section = NameSection::new(None, None, None);
+
+	for name in x.into_iter() {
+		if name.is_err() {
+			println!("$$$ error: {:?}", name);
+			continue;
+		}
+
+		let name = name.unwrap();
+		match name {
+			Name::Function(name_map) => {
+				let mut name_subsection = FunctionNameSubsection::default();
+				let names = name_subsection.names_mut();
+
+				let mut map = name_map.get_map()?;
+
+				let count = map.get_count();
+
+				for idx in 0..count {
+					let name = map.read()?.name.to_string();
+
+					if idx >= gas_func {
+						names.insert(idx + 1, name);
+					} else {
+						names.insert(idx, name);
+					}
+				}
+
+				*name_section.functions_mut() = Some(name_subsection);
+			},
+			Name::Module(name) => {
+				*name_section.module_mut() = Some(ModuleNameSubsection::new(name.get_name()?));
+			},
+			Name::Local(name_map) => {
+				let mut local_ns = LocalNameSubsection::default();
+				let names = local_ns.local_names_mut();
+
+				let mut indirect_reader = name_map.get_indirect_map()?;
+				for _ in 0..indirect_reader.get_indirect_count() {
+					let naming = indirect_reader.read()?;
+					let mut naming_reader = naming.get_map()?;
+
+					let mut index_map = IndexMap::<String>::default();
+					for _ in 0..naming_reader.get_count() {
+						let item = naming_reader.read()?;
+						index_map.insert(item.index, item.name.to_string());
+					}
+					names.insert(naming.indirect_index, index_map);
+				}
+
+				*name_section.locals_mut() = Some(local_ns);
+			},
+			_ => println!("{:?}", name),
+		};
+	}
+
+	Ok(name_section)
 }
 
 /// A control flow block is opened with the `block`, `loop`, and `if` instructions and is closed
