@@ -2,8 +2,8 @@
   (type (;0;) (func))
   (type (;1;) (func (param i32 i32) (result i32)))
   (type (;2;) (func (param i32)))
-  (import "env" "foo" (func $foo (type 0)))
-  (func $i32.add (type 1) (param i32 i32) (result i32)
+  (import "env" "foo" (func $foo (;0;) (type 0)))
+  (func $i32.add (;1;) (type 1) (param i32 i32) (result i32)
     local.get 0
     local.get 1
     i32.add
@@ -53,7 +53,7 @@
     i32.sub
     global.set 1
   )
-  (global $counter (mut i32) i32.const 1)
+  (global $counter (;0;) (mut i32) i32.const 1)
   (global (;1;) (mut i32) i32.const 0)
   (export "i32.add" (func 3))
 )

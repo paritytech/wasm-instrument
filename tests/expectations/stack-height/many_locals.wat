@@ -1,9 +1,9 @@
 (module
   (type (;0;) (func))
-  (func $one-group-many-locals (type 0)
+  (func $one-group-many-locals (;0;) (type 0)
     (local i64 i64 i32)
   )
-  (func $main (type 0)
+  (func $main (;1;) (type 0)
     global.get 0
     i32.const 5
     i32.add

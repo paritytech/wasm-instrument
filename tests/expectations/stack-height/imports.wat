@@ -1,8 +1,8 @@
 (module
   (type (;0;) (func))
   (type (;1;) (func (param i32 i32) (result i32)))
-  (import "env" "foo" (func $foo (type 0)))
-  (import "env" "boo" (func $boo (type 0)))
+  (import "env" "foo" (func $foo (;0;) (type 0)))
+  (import "env" "boo" (func $boo (;1;) (type 0)))
   (func (;2;) (type 1) (param i32 i32) (result i32)
     call $foo
     call $boo
