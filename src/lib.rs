@@ -8,6 +8,4 @@ mod stack_limiter;
 
 pub use export_globals::export_mutable_globals;
 pub use parity_wasm;
-pub use stack_limiter::inject as inject_stack_limiter;
-pub use stack_limiter::compute_stack_cost;
-pub use stack_limiter::compute_stack_costs;
+pub use stack_limiter::{compute_stack_cost, compute_stack_costs, inject as inject_stack_limiter};

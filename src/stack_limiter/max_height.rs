@@ -145,8 +145,9 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 	// Get globals to resove their types
 	let globals: Vec<ValueType> = if let Some(global_section) = module.global_section() {
-		global_section.entries()
-			.into_iter()
+		global_section
+			.entries()
+			.iter()
 			.map(|g| g.global_type().content_type())
 			.collect()
 	} else {
@@ -155,13 +156,10 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 	let locals: Vec<ValueType> = func_signature
 		.params()
-		.into_iter()
+		.iter()
 		.cloned()
-		.chain(
-			body.locals()
-				.iter()
-				.flat_map(|l| vec![l.value_type(); l.count() as usize])
-		).collect();
+		.chain(body.locals().iter().flat_map(|l| vec![l.value_type(); l.count() as usize]))
+		.collect();
 
 	let mut stack = Stack::new();
 	let mut max_weight: u32 = 0;
@@ -170,12 +168,9 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
 	let func_results = func_signature.results();
-	let param_weight: u32 = func_signature
-		.params().iter()
-		.map(|v| value_cost(*v))
-		.sum();
+	let param_weight: u32 = func_signature.params().iter().map(|v| value_cost(*v)).sum();
 
-	let func_result_type = if func_results.len() == 0 { None } else { Some(func_results[0]) };
+	let func_result_type = if func_results.is_empty() { None } else { Some(func_results[0]) };
 
 	stack.push_frame(Frame {
 		is_polymorphic: false,
@@ -222,7 +217,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			},
 			Br(target) => {
 				// Pop values for the destination block result.
-				if let Some(_) = stack.frame(*target)?.branch_type {
+				if stack.frame(*target)?.branch_type.is_some() {
 					stack.pop_value()?;
 				}
 
@@ -283,7 +278,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 				// Push result of the function execution to the stack.
 				let callee_results = ty.results();
-				if callee_results.len() > 0 {
+				if !callee_results.is_empty() {
 					stack.push_value(callee_results[0])?;
 				}
 			},
@@ -301,7 +296,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 				// Push result of the function execution to the stack.
 				let callee_results = ty.results();
-				if callee_results.len() > 0 {
+				if !callee_results.is_empty() {
 					stack.push_value(callee_results[0])?;
 				}
 			},
@@ -402,10 +397,18 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.push_value(ValueType::I32)?;
 			},
 
-			I32Const(_) => { stack.push_value(ValueType::I32)?; },
-			I64Const(_) => { stack.push_value(ValueType::I64)?; },
-			F32Const(_) => { stack.push_value(ValueType::F32)?; },
-			F64Const(_) => { stack.push_value(ValueType::F64)?; },
+			I32Const(_) => {
+				stack.push_value(ValueType::I32)?;
+			},
+			I64Const(_) => {
+				stack.push_value(ValueType::I64)?;
+			},
+			F32Const(_) => {
+				stack.push_value(ValueType::F32)?;
+			},
+			F64Const(_) => {
+				stack.push_value(ValueType::F64)?;
+			},
 
 			I32Eqz | I64Eqz => {
 				// These instructions pop the value and compare it against zero, and pushes
@@ -458,14 +461,14 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.pop_value()?;
 				stack.push_value(ValueType::I64)?;
 			},
-			F32ConvertSI32 | F32ConvertUI32 | F32ConvertSI64 | F32ConvertUI64 |
-			F32DemoteF64 | F32ReinterpretI32 => {
+			F32ConvertSI32 | F32ConvertUI32 | F32ConvertSI64 | F32ConvertUI64 | F32DemoteF64 |
+			F32ReinterpretI32 => {
 				stack.pop_value()?;
 				stack.push_value(ValueType::F32)?;
 			},
 
-			F64ConvertSI32 | F64ConvertUI32 | F64ConvertSI64 | F64ConvertUI64 |
-			F64PromoteF32 |	F64ReinterpretI64 => {
+			F64ConvertSI32 | F64ConvertUI32 | F64ConvertSI64 | F64ConvertUI64 | F64PromoteF32 |
+			F64ReinterpretI64 => {
 				stack.pop_value()?;
 				stack.push_value(ValueType::F64)?;
 			},
@@ -475,11 +478,10 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			SignExt(SignExtInstruction::I32Extend16S) |
 			SignExt(SignExtInstruction::I64Extend8S) |
 			SignExt(SignExtInstruction::I64Extend16S) |
-			SignExt(SignExtInstruction::I64Extend32S) => {
+			SignExt(SignExtInstruction::I64Extend32S) =>
 				if let Some(vt) = stack.pop_value()? {
 					stack.push_value(vt)?;
-				}
-			},
+				},
 		}
 
 		// If current value stack is heavier than maximal weight observed so far,
