@@ -154,7 +154,7 @@ fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
 /// Calculate stack costs for all functions.
 ///
 /// Returns a vector with a stack cost for each function, including imports.
-fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
+pub fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
 	let func_imports = module.import_count(elements::ImportCountType::Function);
 
 	// TODO: optimize!
@@ -173,7 +173,7 @@ fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static s
 /// Stack cost of the given *defined* function is the sum of it's locals count (that is,
 /// number of arguments plus number of local variables) and the maximal stack
 /// height.
-fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+pub fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
 	// To calculate the cost of a function we need to convert index from
 	// function index space to defined function spaces.
 	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
