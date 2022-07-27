@@ -1,9 +1,30 @@
 use super::resolve_func_type;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use parity_wasm::elements::{self, BlockType, Type, ValueType};
 
 #[cfg(feature = "sign_ext")]
 use parity_wasm::elements::SignExtInstruction;
+
+#[cfg(feature = "trace-log")]
+macro_rules! trace {
+    ($($tt:tt)*) => {
+      ::log::trace!($($tt)*);
+    };
+}
+
+#[cfg(not(feature = "trace-log"))]
+macro_rules! trace {
+	($($tt:tt)*) => {};
+}
+
+// The cost in stack items that should be charged per call of a function. This is
+// is a static cost that is added to each function call. This makes sense because even
+// if a function does not use any parameters or locals some stack space on the host
+// machine might be consumed to hold some context.
+const ACTIVATION_FRAME_HEIGHT: u32 = 2;
+
+// Weight of an activation frame.
+const ACTIVATION_FRAME_WEIGHT: u32 = 32;
 
 /// Control stack frame.
 #[derive(Debug)]
@@ -13,11 +34,11 @@ struct Frame {
 	is_polymorphic: bool,
 
 	/// Type of value which will be pushed after exiting
-	/// the current block or `None` if nothing is pushed.
+	/// the current block or `None` if block does not return a result.
 	result_type: Option<ValueType>,
 
 	/// Type of value which should be poped upon a branch to
-	/// this frame or `None` if nothing is popped.
+	/// this frame or `None` if branching shouldn't affect the stack.
 	///
 	/// This might be diffirent from `result_type` since branch
 	/// to the loop header can't take any values.
@@ -69,24 +90,35 @@ impl Stack {
 
 	/// Push control frame into the control stack.
 	fn push_frame(&mut self, frame: Frame) {
+		trace!("  Push control frame {:?}", frame);
 		self.control_stack.push(frame);
 	}
 
 	/// Pop control frame from the control stack.
 	///
 	/// Returns `Err` if the control stack is empty.
+
+	#[allow(clippy::let_and_return)]
 	fn pop_frame(&mut self) -> Result<Frame, &'static str> {
-		self.control_stack.pop().ok_or("stack must be non-empty")
+		trace!("  Pop control frame");
+		let frame = self.control_stack.pop().ok_or("stack must be non-empty");
+		trace!("    {:?}", frame);
+		frame
 	}
 
 	/// Truncate the height of value stack to the specified height.
 	fn trunc(&mut self, new_height: usize) {
+		trace!("  Truncate value stack to {}", new_height);
 		self.values.truncate(new_height);
 	}
 
 	/// Push a value into the value stack.
 	fn push_value(&mut self, value: ValueType) -> Result<(), &'static str> {
+		trace!("  Push {:?} to value stack", value);
 		self.values.push(value);
+		if self.values.len() >= u32::MAX as usize {
+			return Err("stack overflow")
+		}
 		Ok(())
 	}
 
@@ -105,7 +137,9 @@ impl Stack {
 		}
 
 		if self.height() > 0 {
-			Ok(self.values.pop())
+			let vt = self.values.pop();
+			trace!("Pop {:?} from value stack", vt);
+			Ok(vt)
 		} else {
 			Err("trying to pop more values than pushed")
 		}
@@ -114,13 +148,13 @@ impl Stack {
 
 fn value_cost(val: ValueType) -> u32 {
 	match val {
-		ValueType::I32 | ValueType::F32 => 1,
-		ValueType::I64 | ValueType::F64 => 2,
+		ValueType::I32 | ValueType::F32 => 4,
+		ValueType::I64 | ValueType::F64 => 8,
 	}
 }
 
 /// This function expects the function to be validated.
-pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &'static str> {
 	use parity_wasm::elements::Instruction::*;
 
 	let func_section = module.function_section().ok_or("No function section")?;
@@ -151,19 +185,15 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			.map(|g| g.global_type().content_type())
 			.collect()
 	} else {
-		vec![]
+		Vec::new()
 	};
 
-	let locals: Vec<ValueType> = func_signature
-		.params()
-		.iter()
-		.cloned()
-		.chain(body.locals().iter().flat_map(|l| vec![l.value_type(); l.count() as usize]))
-		.collect();
+	let mut locals = func_signature.params().to_vec();
+	locals.extend(body.locals().iter().flat_map(|l| vec![l.value_type(); l.count() as usize]));
 
 	let mut stack = Stack::new();
 	let mut max_weight: u32 = 0;
-	let mut pc = 0;
+	let mut max_height: usize = 0;
 
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
@@ -179,12 +209,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 		start_height: 0,
 	});
 
-	loop {
-		if pc >= instructions.elements().len() {
-			break
-		}
-
-		let opcode = &instructions.elements()[pc];
+	for opcode in instructions.elements() {
+		trace!("Processing opcode {:?}", opcode);
 
 		match opcode {
 			Nop => {},
@@ -195,7 +221,9 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				let height = stack.height();
 				let end_result = if let BlockType::Value(vt) = *ty { Some(vt) } else { None };
 				stack.push_frame(Frame {
-					is_polymorphic: false,
+					is_polymorphic: stack.frame(0)?.is_polymorphic, /* Block inside unreachable
+					                                                 * code is
+					                                                 * unreachable */
 					result_type: end_result,
 					branch_type: if let Loop(_) = *opcode { None } else { end_result },
 					start_height: height,
@@ -211,6 +239,9 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				if let Some(vt) = frame.result_type {
 					stack.push_value(vt)?;
 				}
+				// Push the frame back for now to allow for stack calculations. We'll get rid of it
+				// later
+				stack.push_frame(frame);
 			},
 			Unreachable => {
 				stack.mark_unreachable()?;
@@ -487,20 +518,45 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 		// If current value stack is heavier than maximal weight observed so far,
 		// save the new weight.
 		// However, we don't increase maximal value in unreachable code.
-		if stack.weight() > max_weight && !stack.frame(0)?.is_polymorphic {
-			max_weight = stack.weight();
+		if !stack.frame(0)?.is_polymorphic {
+			let (cur_weight, cur_height) = (stack.weight(), stack.height());
+			if cur_weight > max_weight {
+				max_weight = cur_weight;
+				trace!("Max weight is now {}", max_weight);
+			}
+			if cur_height > max_height {
+				max_height = cur_height;
+				trace!("Max height is now {}", max_height);
+			}
 		}
 
-		pc += 1;
+		// Post-execution stage: pop a control frame if block is ended
+		if *opcode == End {
+			stack.pop_frame()?;
+		}
 	}
 
-	Ok(max_weight + param_weight)
+	trace!("Final max stack height: {} + {}", ACTIVATION_FRAME_HEIGHT, max_height);
+	trace!(
+		"Final max stack weight: {} + {} + {}",
+		ACTIVATION_FRAME_WEIGHT,
+		max_weight,
+		param_weight
+	);
+
+	Ok((
+		ACTIVATION_FRAME_HEIGHT + max_height as u32,
+		ACTIVATION_FRAME_WEIGHT + max_weight + param_weight,
+	))
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use parity_wasm::elements;
+
+	#[cfg(feature = "trace-log")]
+	use test_log::test;
 
 	fn parse_wat(source: &str) -> elements::Module {
 		elements::deserialize_buffer(&wat::parse_str(source).expect("Failed to wat2wasm"))
@@ -524,8 +580,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 3);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 3, ACTIVATION_FRAME_WEIGHT + 12));
 	}
 
 	#[test]
@@ -541,8 +597,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 2);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 1, ACTIVATION_FRAME_WEIGHT + 8));
 	}
 
 	#[test]
@@ -559,8 +615,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 0);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT, ACTIVATION_FRAME_WEIGHT));
 	}
 
 	#[test]
@@ -588,8 +644,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 2);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 2, ACTIVATION_FRAME_WEIGHT + 8));
 	}
 
 	#[test]
@@ -612,8 +668,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 1);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 1, ACTIVATION_FRAME_WEIGHT + 4));
 	}
 
 	#[test]
@@ -634,8 +690,8 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 1);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 1, ACTIVATION_FRAME_WEIGHT + 4));
 	}
 
 	#[test]
@@ -660,7 +716,7 @@ mod tests {
 "#,
 		);
 
-		let weight = compute(0, &module).unwrap();
-		assert_eq!(weight, 3);
+		let res = compute(0, &module).unwrap();
+		assert_eq!(res, (ACTIVATION_FRAME_HEIGHT + 3, ACTIVATION_FRAME_WEIGHT + 12));
 	}
 }

@@ -194,11 +194,25 @@ pub fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u3
 			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
 	}
 
-	let max_stack_height = max_height::compute(defined_func_idx, module)?;
+	let (max_stack_height, _max_stack_weight) = max_height::compute(defined_func_idx, module)?;
 
 	locals_count
 		.checked_add(max_stack_height)
 		.ok_or("Overflow in adding locals_count and max_stack_height")
+}
+
+/// Stack height is the measurement maximum wasm stack height reached during function execution.
+/// Stack weight is weighted value which approximates a real stack size on x64 architecture.
+pub fn compute_stack_height_weight(
+	func_idx: u32,
+	module: &elements::Module,
+) -> Result<(u32, u32), &'static str> {
+	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
+	let defined_func_idx = func_idx
+		.checked_sub(func_imports)
+		.ok_or("This should be a index of a defined function")?;
+
+	max_height::compute(defined_func_idx, module)
 }
 
 fn instrument_functions(
