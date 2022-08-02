@@ -181,8 +181,19 @@ fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &
 		.checked_sub(func_imports)
 		.ok_or("This should be a index of a defined function")?;
 
-	let code_section =
-		module.code_section().ok_or("Due to validation code section should exists")?;
+	let func_section = module.function_section().ok_or("No function section")?;
+	let code_section = module.code_section().ok_or("No code section")?;
+	let type_section = module.type_section().ok_or("No type section")?;
+
+	let func_sig_idx = func_section
+		.entries()
+		.get(func_idx as usize)
+		.ok_or("Function is not found in func section")?
+		.type_ref();
+	let Type::Function(func_signature) = type_section
+		.types()
+		.get(func_sig_idx as usize)
+		.ok_or("Function is not found in func section")?;
 	let body = &code_section
 		.bodies()
 		.get(defined_func_idx as usize)
@@ -193,6 +204,7 @@ fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &
 		locals_count =
 			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
 	}
+	locals_count = locals_count.checked_add(func_signature.params().len() as u32).ok_or("Overflow in parameter count")?;
 
 	let max_stack_height = max_height::compute(defined_func_idx, module)?;
 

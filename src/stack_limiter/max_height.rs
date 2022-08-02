@@ -147,7 +147,6 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 	let mut stack = Stack::new();
 	let mut max_height: u32 = 0;
-	let mut pc = 0;
 
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
@@ -159,19 +158,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 		start_height: 0,
 	});
 
-	loop {
-		if pc >= instructions.elements().len() {
-			break
-		}
-
-		// If current value stack is higher than maximal height observed so far,
-		// save the new height.
-		// However, we don't increase maximal value in unreachable code.
-		if stack.height() > max_height && !stack.frame(0)?.is_polymorphic {
-			max_height = stack.height();
-		}
-
-		let opcode = &instructions.elements()[pc];
+	for opcode in instructions.elements() {
 
 		match opcode {
 			Nop => {},
@@ -403,7 +390,13 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.push_values(1)?;
 			},
 		}
-		pc += 1;
+
+		// If current value stack is higher than maximal height observed so far,
+		// save the new height.
+		// However, we don't increase maximal value in unreachable code.
+		if stack.height() > max_height && !stack.frame(0)?.is_polymorphic {
+			max_height = stack.height();
+		}
 	}
 
 	Ok(max_height)
