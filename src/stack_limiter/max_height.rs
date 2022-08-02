@@ -32,6 +32,7 @@ struct Frame {
 	/// Stack becomes polymorphic only after an instruction that
 	/// never passes control further was executed.
 	is_polymorphic: bool,
+	unreachable_depth: u32,
 
 	/// Type of value which will be pushed after exiting
 	/// the current block or `None` if block does not return a result.
@@ -48,10 +49,13 @@ struct Frame {
 	start_height: usize,
 }
 
+#[derive(Clone)]
+struct StackValue (ValueType, bool);
+
 /// This is a compound stack that abstracts tracking height and weight of the value stack
 /// and manipulation of the control stack.
 struct Stack {
-	values: Vec<ValueType>,
+	values: Vec<StackValue>,
 	control_stack: Vec<Frame>,
 }
 
@@ -60,9 +64,13 @@ impl Stack {
 		Stack { values: Vec::new(), control_stack: Vec::new() }
 	}
 
+	// fn new_from(stack: &Stack) -> Stack {
+	// 	Stack { values: stack.values.clone(), control_stack: stack.control_stack.clone() }
+	// } 
+
 	/// Returns current weight of the value stack.
 	fn weight(&self) -> u32 {
-		self.values.iter().map(|v| value_cost(*v)).sum()
+		self.values.iter().map(|v| value_cost(v.0)).sum()
 	}
 
 	/// Returns current height of the value stack.
@@ -85,7 +93,20 @@ impl Stack {
 	fn mark_unreachable(&mut self) -> Result<(), &'static str> {
 		let top_frame = self.control_stack.last_mut().ok_or("stack must be non-empty")?;
 		top_frame.is_polymorphic = true;
+		top_frame.unreachable_depth = 1;
 		Ok(())
+	}
+
+	fn push_unreachable(&mut self) -> Result<(), &'static str> {
+		let top_frame = self.control_stack.last_mut().ok_or("stack must be non-empty")?;
+		top_frame.unreachable_depth += 1;
+		Ok(())
+	}
+
+	fn pop_unreachable(&mut self) -> Result<u32, &'static str> {
+		let top_frame = self.control_stack.last_mut().ok_or("stack must be non-empty")?;
+		top_frame.unreachable_depth -= 1;
+		Ok(top_frame.unreachable_depth)
 	}
 
 	/// Push control frame into the control stack.
@@ -113,7 +134,7 @@ impl Stack {
 	}
 
 	/// Push a value into the value stack.
-	fn push_value(&mut self, value: ValueType) -> Result<(), &'static str> {
+	fn push_value(&mut self, value: StackValue) -> Result<(), &'static str> {
 		trace!("  Push {:?} to value stack", value);
 		self.values.push(value);
 		if self.values.len() >= u32::MAX as usize {
@@ -126,7 +147,7 @@ impl Stack {
 	///
 	/// Returns `Err` if the stack happen to be negative value after
 	/// value popped.
-	fn pop_value(&mut self) -> Result<Option<ValueType>, &'static str> {
+	fn pop_value(&mut self) -> Result<Option<StackValue>, &'static str> {
 		let top_frame = self.frame(0)?;
 		if self.height() == top_frame.start_height {
 			return if top_frame.is_polymorphic {
@@ -152,6 +173,13 @@ fn value_cost(val: ValueType) -> u32 {
 		ValueType::I64 | ValueType::F64 => 8,
 	}
 }
+
+// struct FunctionContext {
+// 	globals: Vec<ValueType>,
+// 	locals: Vec<ValueType>,
+// 	stack: Stack,
+// 	result_type: Option<ValueType>
+// }
 
 /// This function expects the function to be validated.
 pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &'static str> {
@@ -188,8 +216,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 		Vec::new()
 	};
 
-	let mut locals = func_signature.params().to_vec();
-	locals.extend(body.locals().iter().flat_map(|l| vec![l.value_type(); l.count() as usize]));
+	let mut locals: Vec<StackValue> = func_signature.params().iter().map(|p| StackValue(*p, false)).collect();
+	locals.extend(body.locals().iter().flat_map(|l| vec![StackValue(l.value_type(), true); l.count() as usize]));
 
 	let mut stack = Stack::new();
 	let mut max_weight: u32 = 0;
@@ -204,12 +232,36 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 
 	stack.push_frame(Frame {
 		is_polymorphic: false,
+		unreachable_depth: 0,
 		result_type: func_result_type,
 		branch_type: func_result_type,
 		start_height: 0,
 	});
 
 	for opcode in instructions.elements() {
+		let current_frame = stack.frame(0)?;
+		if current_frame.is_polymorphic {
+			match opcode {
+				Block(ty) | Loop(ty) | If(ty) => {
+					trace!("Entering unreachable block {:?}", opcode);
+					stack.push_unreachable()?;
+				},
+				End => {
+					let depth = stack.pop_unreachable()?;
+					if depth == 0 {
+						trace!("Exiting unreachable code");
+						stack.pop_frame()?;
+					} else {
+						trace!("Exiting unreachable block");
+					}
+				},
+				_ => {
+					trace!("Skipping unreachable instruction {:?}", opcode);
+				}
+			}
+			continue;
+		}
+
 		trace!("Processing opcode {:?}", opcode);
 
 		match opcode {
@@ -221,9 +273,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 				let height = stack.height();
 				let end_result = if let BlockType::Value(vt) = *ty { Some(vt) } else { None };
 				stack.push_frame(Frame {
-					is_polymorphic: stack.frame(0)?.is_polymorphic, /* Block inside unreachable
-					                                                 * code is
-					                                                 * unreachable */
+					is_polymorphic: false,
+					unreachable_depth: 0,
 					result_type: end_result,
 					branch_type: if let Loop(_) = *opcode { None } else { end_result },
 					start_height: height,
@@ -234,58 +285,58 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 				// it as is.
 			},
 			End => {
-				let frame = stack.pop_frame()?;
-				stack.trunc(frame.start_height);
-				if let Some(vt) = frame.result_type {
-					stack.push_value(vt)?;
-				}
-				// Push the frame back for now to allow for stack calculations. We'll get rid of it
-				// later
-				stack.push_frame(frame);
+				// let frame = stack.pop_frame()?;
+				// stack.trunc(frame.start_height);
+				// if let Some(vt) = frame.result_type {
+				// 	stack.push_value(vt)?;
+				// }
+				// // Push the frame back for now to allow for stack calculations. We'll get rid of it
+				// // later
+				// stack.push_frame(frame);
 			},
 			Unreachable => {
 				stack.mark_unreachable()?;
 			},
 			Br(target) => {
 				// Pop values for the destination block result.
-				if stack.frame(*target)?.branch_type.is_some() {
-					stack.pop_value()?;
-				}
+				// if stack.frame(*target)?.branch_type.is_some() {
+				// 	stack.pop_value()?;
+				// }
 
 				// This instruction unconditionally transfers control to the specified block,
 				// thus all instruction until the end of the current block is deemed unreachable
 				stack.mark_unreachable()?;
 			},
 			BrIf(target) => {
-				let target_type = stack.frame(*target)?.branch_type;
-				// Pop values for the destination block result.
-				if target_type.is_some() {
-					stack.pop_value()?;
-				}
+				// let target_type = stack.frame(*target)?.branch_type;
+				// // Pop values for the destination block result.
+				// if target_type.is_some() {
+				// 	stack.pop_value()?;
+				// }
 
 				// Pop condition value.
 				stack.pop_value()?;
 
 				// Push values back.
-				if let Some(vt) = target_type {
-					stack.push_value(vt)?;
-				}
+				// if let Some(vt) = target_type {
+				// 	stack.push_value(vt)?;
+				// }
 			},
 			BrTable(br_table_data) => {
-				let default_type = stack.frame(br_table_data.default)?.branch_type;
+				// let default_type = stack.frame(br_table_data.default)?.branch_type;
 
-				// Check that all jump targets have an equal arities.
-				for target in &*br_table_data.table {
-					if stack.frame(*target)?.branch_type != default_type {
-						return Err("Types of all jump-targets must be equal")
-					}
-				}
+				// Check that all jump targets have an equal number of parameters
+				// for target in &*br_table_data.table {
+				// 	if stack.frame(*target)?.branch_type != default_type {
+				// 		return Err("Types of all jump-targets must be equal")
+				// 	}
+				// }
 
 				// Because all jump targets have equal types, we can just take type of
 				// the default branch.
-				if default_type.is_some() {
-					stack.pop_value()?;
-				}
+				// if default_type.is_some() {
+				// 	stack.pop_value()?;
+				// }
 
 				// This instruction doesn't let control flow to go further, since the control flow
 				// should take either one of branches depending on the value or the default branch.
@@ -310,7 +361,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 				// Push result of the function execution to the stack.
 				let callee_results = ty.results();
 				if !callee_results.is_empty() {
-					stack.push_value(callee_results[0])?;
+					stack.push_value(StackValue(callee_results[0], false))?;
 				}
 			},
 			CallIndirect(x, _) => {
@@ -328,7 +379,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 				// Push result of the function execution to the stack.
 				let callee_results = ty.results();
 				if !callee_results.is_empty() {
-					stack.push_value(callee_results[0])?;
+					stack.push_value(StackValue(callee_results[0], false))?;
 				}
 			},
 			Drop => {
@@ -370,7 +421,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 				if idx >= globals.len() {
 					return Err("Reference to a global is out of bounds")
 				}
-				stack.push_value(globals[idx])?;
+				stack.push_value(StackValue(globals[idx], false))?;
 			},
 			SetGlobal(_) => {
 				stack.pop_value()?;
@@ -382,8 +433,9 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 			I32Load8U(_, _) |
 			I32Load16S(_, _) |
 			I32Load16U(_, _) => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::I32)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::I32, sv.1))?;
+				}
 			},
 			I64Load(_, _) |
 			I64Load8S(_, _) |
@@ -392,16 +444,19 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 			I64Load16U(_, _) |
 			I64Load32S(_, _) |
 			I64Load32U(_, _) => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::I64)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::I64, sv.1))?;
+				}
 			},
 			F32Load(_, _) => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::F32)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::F32, sv.1))?;
+				}
 			},
 			F64Load(_, _) => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::F64)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::F64, sv.1))?;
+				}
 			},
 
 			I32Store(_, _) |
@@ -420,32 +475,33 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 
 			CurrentMemory(_) => {
 				// Pushes current memory size
-				stack.push_value(ValueType::I32)?;
+				stack.push_value(StackValue(ValueType::I32, false))?;
 			},
 			GrowMemory(_) => {
 				// Grow memory takes the value of pages to grow and pushes
 				stack.pop_value()?;
-				stack.push_value(ValueType::I32)?;
+				stack.push_value(StackValue(ValueType::I32, false))?;
 			},
 
 			I32Const(_) => {
-				stack.push_value(ValueType::I32)?;
+				stack.push_value(StackValue(ValueType::I32, true))?;
 			},
 			I64Const(_) => {
-				stack.push_value(ValueType::I64)?;
+				stack.push_value(StackValue(ValueType::I64, true))?;
 			},
 			F32Const(_) => {
-				stack.push_value(ValueType::F32)?;
+				stack.push_value(StackValue(ValueType::F32, true))?;
 			},
 			F64Const(_) => {
-				stack.push_value(ValueType::F64)?;
+				stack.push_value(StackValue(ValueType::F64, true))?;
 			},
 
 			I32Eqz | I64Eqz => {
 				// These instructions pop the value and compare it against zero, and pushes
 				// the result of the comparison.
-				stack.pop_value()?;
-				stack.push_value(ValueType::I32)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::I32, sv.1))?;
+				}
 			},
 
 			I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS |
@@ -453,17 +509,17 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 			I64GeS | I64GeU | F32Eq | F32Ne | F32Lt | F32Gt | F32Le | F32Ge | F64Eq | F64Ne |
 			F64Lt | F64Gt | F64Le | F64Ge => {
 				// Comparison operations take two operands and produce one result.
-				stack.pop_value()?;
-				stack.pop_value()?;
-				stack.push_value(ValueType::I32)?;
+				let Some(op1) = stack.pop_value()?;
+				let Some(op2) = stack.pop_value()?;
+				stack.push_value(StackValue(ValueType::I32, op1.1 && op2.1))?;
 			},
 
 			I32Clz | I32Ctz | I32Popcnt | I64Clz | I64Ctz | I64Popcnt | F32Abs | F32Neg |
 			F32Ceil | F32Floor | F32Trunc | F32Nearest | F32Sqrt | F64Abs | F64Neg | F64Ceil |
 			F64Floor | F64Trunc | F64Nearest | F64Sqrt => {
 				// Unary operators take one operand and produce one result.
-				if let Some(vt) = stack.pop_value()? {
-					stack.push_value(vt)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(sv)?;
 				}
 			},
 
@@ -474,34 +530,36 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 			F32Min | F32Max | F32Copysign | F64Add | F64Sub | F64Mul | F64Div | F64Min |
 			F64Max | F64Copysign => {
 				// Binary operators take two operands and produce one result.
-				let val = stack.pop_value()?;
-				stack.pop_value()?;
-				if let Some(vt) = val {
-					stack.push_value(vt)?;
-				}
+				let Some(op1) = stack.pop_value()?;
+				let Some(op2) = stack.pop_value()?;
+				stack.push_value(StackValue(op1.0, op1.1 && op2.1))?;
 			},
 
 			// Conversion operators take one value and produce one result.
 			I32WrapI64 | I32TruncSF32 | I32TruncUF32 | I32TruncSF64 | I32TruncUF64 |
 			I32ReinterpretF32 => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::I32)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::I32, sv.1))?;
+				}
 			},
 			I64ExtendSI32 | I64ExtendUI32 | I64TruncSF32 | I64TruncUF32 | I64TruncSF64 |
 			I64TruncUF64 | I64ReinterpretF64 => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::I64)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::I64, sv.1))?;
+				}
 			},
 			F32ConvertSI32 | F32ConvertUI32 | F32ConvertSI64 | F32ConvertUI64 | F32DemoteF64 |
 			F32ReinterpretI32 => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::F32)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::F32, sv.1))?;
+				}
 			},
 
 			F64ConvertSI32 | F64ConvertUI32 | F64ConvertSI64 | F64ConvertUI64 | F64PromoteF32 |
 			F64ReinterpretI64 => {
-				stack.pop_value()?;
-				stack.push_value(ValueType::F64)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(StackValue(ValueType::F64, sv.1))?;
+				}
 			},
 
 			#[cfg(feature = "sign_ext")]
@@ -510,8 +568,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<(u32, u32), &
 			SignExt(SignExtInstruction::I64Extend8S) |
 			SignExt(SignExtInstruction::I64Extend16S) |
 			SignExt(SignExtInstruction::I64Extend32S) =>
-				if let Some(vt) = stack.pop_value()? {
-					stack.push_value(vt)?;
+				if let Some(sv) = stack.pop_value()? {
+					stack.push_value(sv)?;
 				},
 		}
 
