@@ -22,6 +22,7 @@ codegen-units = 1
 
 [dependencies]
 parity-wasm = { version = "0.45", default-features = false }
+log = "0.4"
 
 [dev-dependencies]
 binaryen = "0.12"

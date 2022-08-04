@@ -9,14 +9,13 @@ use parity_wasm::elements::SignExtInstruction;
 // is a static cost that is added to each function call. This makes sense because even
 // if a function does not use any parameters or locals some stack space on the host
 // machine might be consumed to hold some context.
-const ACTIVATION_FRAME_COST: u32 = 2;
+const ACTIVATION_FRAME_COST: u32 = 1;
 
 /// Control stack frame.
 #[derive(Debug)]
 struct Frame {
-	/// Stack becomes polymorphic only after an instruction that
-	/// never passes control further was executed.
-	is_polymorphic: bool,
+	/// Counts the nesting level of unreachable code. 0 if currently processed code is reachable
+	unreachable_depth: u32,
 
 	/// Count of values which will be pushed after the exit
 	/// from the current block.
@@ -42,12 +41,16 @@ struct Stack {
 
 impl Stack {
 	fn new() -> Stack {
-		Stack { height: ACTIVATION_FRAME_COST, control_stack: Vec::new() }
+		Stack { height: 0, control_stack: Vec::new() }
 	}
 
 	/// Returns current height of the value stack.
 	fn height(&self) -> u32 {
 		self.height
+	}
+
+	fn control_height(&self) -> u32 {
+		self.control_stack.len() as u32
 	}
 
 	/// Returns a reference to a frame by specified depth relative to the top of
@@ -60,12 +63,25 @@ impl Stack {
 	}
 
 	/// Mark successive instructions as unreachable.
-	///
-	/// This effectively makes stack polymorphic.
 	fn mark_unreachable(&mut self) -> Result<(), &'static str> {
-		let top_frame = self.control_stack.last_mut().ok_or("stack must be non-empty")?;
-		top_frame.is_polymorphic = true;
+		let top_frame = self.control_stack.last_mut().ok_or("control stack must be non-empty")?;
+		top_frame.unreachable_depth = 1;
 		Ok(())
+	}
+
+	/// Increase nesting level of unreachable code
+	fn push_unreachable(&mut self) -> Result<(), &'static str> {
+		let top_frame = self.control_stack.last_mut().ok_or("control stack must be non-empty")?;
+		top_frame.unreachable_depth += 1;
+		Ok(())
+	}
+
+	/// Decrease nesting level of unrechable code (probably making it reachable)
+	fn pop_unreachable(&mut self) -> Result<u32, &'static str> {
+		let top_frame = self.control_stack.last_mut().ok_or("control stack must be non-empty")?;
+		top_frame.unreachable_depth =
+			top_frame.unreachable_depth.checked_sub(1).ok_or("unreachable code underflow")?;
+		Ok(top_frame.unreachable_depth)
 	}
 
 	/// Push control frame into the control stack.
@@ -101,19 +117,6 @@ impl Stack {
 		if value_count == 0 {
 			return Ok(())
 		}
-		{
-			let top_frame = self.frame(0)?;
-			if self.height == top_frame.start_height {
-				// It is an error to pop more values than was pushed in the current frame
-				// (ie pop values pushed in the parent frame), unless the frame became
-				// polymorphic.
-				return if top_frame.is_polymorphic {
-					Ok(())
-				} else {
-					return Err("trying to pop more values than pushed")
-				}
-			}
-		}
 
 		self.height = self.height.checked_sub(value_count).ok_or("stack underflow")?;
 
@@ -124,6 +127,8 @@ impl Stack {
 /// This function expects the function to be validated.
 pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
 	use parity_wasm::elements::Instruction::*;
+
+	trace!("Processing function index {}", func_idx);
 
 	let func_section = module.function_section().ok_or("No function section")?;
 	let code_section = module.code_section().ok_or("No code section")?;
@@ -147,18 +152,62 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 	let mut stack = Stack::new();
 	let mut max_height: u32 = 0;
+	let mut max_control_height: u32 = 0;
+
+	let mut locals_count: u32 = 0;
+	for local_group in body.locals() {
+		locals_count =
+			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
+	}
+
+	let params_count = func_signature.params().len() as u32;
 
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
 	let func_arity = func_signature.results().len() as u32;
 	stack.push_frame(Frame {
-		is_polymorphic: false,
+		unreachable_depth: 0,
 		end_arity: func_arity,
 		branch_arity: func_arity,
 		start_height: 0,
 	});
 
 	for opcode in instructions.elements() {
+		if stack.frame(0)?.unreachable_depth > 0 {
+			match opcode {
+				Block(_) | Loop(_) | If(_) => {
+					trace!("Entering unreachable block {:?}", opcode);
+					stack.push_unreachable()?;
+					continue
+				},
+				Else => {
+					let depth = stack.pop_unreachable()?;
+					if depth == 0 {
+						trace!("Transiting from unreachable If body to reachable Else block");
+					} else {
+						trace!("Processing unreachable Else");
+						stack.push_unreachable()?;
+						continue
+					}
+				},
+				End => {
+					let depth = stack.pop_unreachable()?;
+					if depth == 0 {
+						trace!("Exiting unreachable code");
+					} else {
+						trace!("Exiting unreachable block");
+						continue
+					}
+				},
+				_ => {
+					trace!("Skipping unreachable instruction {:?}", opcode);
+					continue
+				},
+			}
+		}
+
+		assert_eq!(stack.frame(0)?.unreachable_depth, 0);
+		trace!("Processing opcode {:?}", opcode);
 
 		match opcode {
 			Nop => {},
@@ -168,17 +217,17 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				if let If(_) = *opcode {
 					stack.pop_values(1)?;
 				}
-				let height = stack.height();
 				stack.push_frame(Frame {
-					is_polymorphic: false,
+					unreachable_depth: 0,
 					end_arity,
 					branch_arity,
-					start_height: height,
+					start_height: stack.height(),
 				});
 			},
 			Else => {
-				// The frame at the top should be pushed by `If`. So we leave
-				// it as is.
+				let frame = stack.pop_frame()?;
+				stack.trunc(frame.start_height);
+				stack.push_frame(frame);
 			},
 			End => {
 				let frame = stack.pop_frame()?;
@@ -210,14 +259,6 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			},
 			BrTable(br_table_data) => {
 				let arity_of_default = stack.frame(br_table_data.default)?.branch_arity;
-
-				// Check that all jump targets have an equal arities.
-				for target in &*br_table_data.table {
-					let arity = stack.frame(*target)?.branch_arity;
-					if arity != arity_of_default {
-						return Err("Arity of all jump-targets must be equal")
-					}
-				}
 
 				// Because all jump targets have an equal arities, we can just take arity of
 				// the default branch.
@@ -391,15 +432,36 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			},
 		}
 
-		// If current value stack is higher than maximal height observed so far,
+		// If current value/control stack is higher than maximal height observed so far,
 		// save the new height.
-		// However, we don't increase maximal value in unreachable code.
-		if stack.height() > max_height && !stack.frame(0)?.is_polymorphic {
+
+		if stack.height() > max_height {
 			max_height = stack.height();
 		}
+		if stack.control_height() > max_control_height {
+			max_control_height = stack.control_height();
+		}
+		trace!(
+			"  Stack height: {}, control stack height: {}",
+			stack.height(),
+			stack.control_height()
+		);
 	}
 
-	Ok(max_height)
+	assert_eq!(stack.control_height(), 0);
+	assert_eq!(stack.height(), func_signature.results().len() as u32);
+
+	trace!(
+		"Result: {} activation + {} stack + {} control stack + {} locals + {} params = {}",
+		ACTIVATION_FRAME_COST,
+		max_height,
+		max_control_height,
+		locals_count,
+		params_count,
+		ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count
+	);
+
+	Ok(ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count)
 }
 
 #[cfg(test)]
@@ -430,7 +492,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, ACTIVATION_FRAME_COST + 3 + 1 + 0 + 0);
 	}
 
 	#[test]
@@ -447,7 +509,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, ACTIVATION_FRAME_COST + 1 + 1 + 0 + 0);
 	}
 
 	#[test]
@@ -465,7 +527,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, ACTIVATION_FRAME_COST);
+		assert_eq!(height, ACTIVATION_FRAME_COST + 0 + 1 + 0 + 0);
 	}
 
 	#[test]
