@@ -11,6 +11,17 @@ use parity_wasm::elements::SignExtInstruction;
 // machine might be consumed to hold some context.
 const ACTIVATION_FRAME_COST: u32 = 1;
 
+#[derive(Debug,PartialEq,Default,Clone,Copy)]
+pub struct StackHeightStats {
+	pub activation_cost: u32,
+	pub max_height: u32,
+	pub max_control_height: u32,
+	pub locals_count: u32,
+	pub params_count: u32,
+	pub blocks_count: u32,
+	pub total_cost: u32,
+}
+
 /// Control stack frame.
 #[derive(Debug)]
 struct Frame {
@@ -125,7 +136,7 @@ impl Stack {
 }
 
 /// This function expects the function to be validated.
-pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightStats, &'static str> {
 	use parity_wasm::elements::Instruction::*;
 
 	trace!("Processing function index {}", func_idx);
@@ -161,6 +172,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 	}
 
 	let params_count = func_signature.params().len() as u32;
+	let mut blocks_count = 0u32;
 
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
@@ -223,6 +235,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 					branch_arity,
 					start_height: stack.height(),
 				});
+				blocks_count += 1;
 			},
 			Else => {
 				let frame = stack.pop_frame()?;
@@ -451,17 +464,19 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 	assert_eq!(stack.control_height(), 0);
 	assert_eq!(stack.height(), func_signature.results().len() as u32);
 
-	trace!(
-		"Result: {} activation + {} stack + {} control stack + {} locals + {} params = {}",
-		ACTIVATION_FRAME_COST,
-		max_height,
-		max_control_height,
-		locals_count,
-		params_count,
-		ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count
-	);
+	let res = StackHeightStats {
+		activation_cost: ACTIVATION_FRAME_COST,
+		max_height: max_height,
+		max_control_height: max_control_height,
+		locals_count: locals_count,
+		params_count: params_count,
+		blocks_count: blocks_count,
+		total_cost: ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count,
+	};
 
-	Ok(ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count)
+	trace!("Result: {:?}", res);
+
+	Ok(res)
 }
 
 #[cfg(test)]

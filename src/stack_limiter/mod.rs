@@ -6,6 +6,7 @@ use parity_wasm::{
 	builder,
 	elements::{self, Instruction, Instructions, Type},
 };
+pub use max_height::StackHeightStats;
 
 /// Macro to generate preamble and postamble.
 macro_rules! instrument_call {
@@ -40,7 +41,7 @@ mod thunk;
 
 pub struct Context {
 	stack_height_global_idx: u32,
-	func_stack_costs: Vec<u32>,
+	func_stack_costs: Vec<StackHeightStats>,
 	stack_limit: u32,
 }
 
@@ -52,7 +53,11 @@ impl Context {
 
 	/// Returns `stack_cost` for `func_idx`.
 	fn stack_cost(&self, func_idx: u32) -> Option<u32> {
-		self.func_stack_costs.get(func_idx as usize).cloned()
+		if let Some(stats) = self.func_stack_costs.get(func_idx as usize) {
+			Some(stats.total_cost)
+		} else {
+			None
+		}
 	}
 
 	/// Returns stack limit specified by the rules.
@@ -154,7 +159,7 @@ fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
 /// Calculate stack costs for all functions.
 ///
 /// Returns a vector with a stack cost for each function, including imports.
-fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
+fn compute_stack_costs(module: &elements::Module) -> Result<Vec<StackHeightStats>, &'static str> {
 	let func_imports = module.import_count(elements::ImportCountType::Function);
 
 	// TODO: optimize!
@@ -162,7 +167,7 @@ fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static s
 		.map(|func_idx| {
 			if func_idx < func_imports {
 				// We can't calculate stack_cost of the import functions.
-				Ok(0)
+				Ok(Default::default())
 			} else {
 				compute_stack_cost(func_idx as u32, module)
 			}
@@ -173,7 +178,7 @@ fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static s
 /// Stack cost of the given *defined* function is the sum of it's locals count (that is,
 /// number of arguments plus number of local variables) and the maximal stack
 /// height.
-pub fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+pub fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<StackHeightStats, &'static str> {
 	// To calculate the cost of a function we need to convert index from
 	// function index space to defined function spaces.
 	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
