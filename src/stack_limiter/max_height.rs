@@ -19,6 +19,9 @@ pub struct StackHeightStats {
 	pub locals_count: u32,
 	pub params_count: u32,
 	pub blocks_count: u32,
+	pub push_count: u32,
+	pub local_set_count: u32,
+	pub opcode_count: u32,
 	pub total_cost: u32,
 }
 
@@ -173,6 +176,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 
 	let params_count = func_signature.params().len() as u32;
 	let mut blocks_count = 0u32;
+	let mut push_count = 0u32;
+	let mut local_set_count = 0u32;
 
 	// Add implicit frame for the function. Breaks to this frame and execution of
 	// the last end should deal with this frame.
@@ -321,21 +326,26 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 
 				// Push the selected value.
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 			GetLocal(_) => {
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 			SetLocal(_) => {
 				stack.pop_values(1)?;
+				local_set_count += 1;
 			},
 			TeeLocal(_) => {
 				// This instruction pops and pushes the value, so
 				// effectively it doesn't modify the stack height.
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				local_set_count += 1;
 			},
 			GetGlobal(_) => {
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 			SetGlobal(_) => {
 				stack.pop_values(1)?;
@@ -358,6 +368,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// which effictively don't modify the stack height.
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Store(_, _) |
@@ -376,16 +387,19 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 			CurrentMemory(_) => {
 				// Pushes current memory size
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 			GrowMemory(_) => {
 				// Grow memory takes the value of pages to grow and pushes
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => {
 				// These instructions just push the single literal value onto the stack.
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Eqz | I64Eqz => {
@@ -393,6 +407,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// the result of the comparison.
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS |
@@ -402,6 +417,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// Comparison operations take two operands and produce one result.
 				stack.pop_values(2)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Clz | I32Ctz | I32Popcnt | I64Clz | I64Ctz | I64Popcnt | F32Abs | F32Neg |
@@ -410,6 +426,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// Unary operators take one operand and produce one result.
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or |
@@ -421,6 +438,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// Binary operators take two operands and produce one result.
 				stack.pop_values(2)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			I32WrapI64 | I32TruncSF32 | I32TruncUF32 | I32TruncSF64 | I32TruncUF64 |
@@ -432,6 +450,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 				// Conversion operators take one value and produce one result.
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 
 			#[cfg(feature = "sign_ext")]
@@ -442,6 +461,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 			SignExt(SignExtInstruction::I64Extend32S) => {
 				stack.pop_values(1)?;
 				stack.push_values(1)?;
+				push_count += 1;
 			},
 		}
 
@@ -471,7 +491,11 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<StackHeightSt
 		locals_count: locals_count,
 		params_count: params_count,
 		blocks_count: blocks_count,
-		total_cost: ACTIVATION_FRAME_COST + max_height + max_control_height + locals_count + params_count,
+		push_count: push_count,
+		local_set_count: local_set_count,
+		opcode_count: instructions.elements().len() as u32,
+		// total_cost: (11.749 * params_count as f64 - 0.4888 * locals_count as f64 + 14.8169 * max_height as f64 - 5.1594 * max_control_height as f64 - 24.4941) as u32
+		total_cost: ACTIVATION_FRAME_COST + 2 * max_height + max_control_height + locals_count + 2 * params_count,
 	};
 
 	trace!("Result: {:?}", res);
