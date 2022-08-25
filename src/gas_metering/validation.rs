@@ -8,7 +8,7 @@
 //! searching through all paths, which may take exponential time in the size of the function body in
 //! the worst case.
 
-use super::{ConstantCostRules, MeteredBlock, Rules, BlockCostCounter};
+use super::{BlockCostCounter, ConstantCostRules, MeteredBlock, Rules};
 use parity_wasm::elements::{FuncBody, Instruction};
 use std::collections::BTreeMap as Map;
 
@@ -68,11 +68,17 @@ impl ControlFlowGraph {
 	}
 
 	fn increment_actual_cost(&mut self, node_id: NodeId, cost: u32) {
-		self.get_node_mut(node_id).actual_cost.add(BlockCostCounter::with_initial(cost)).expect("actual gas summation overflow");
+		self.get_node_mut(node_id)
+			.actual_cost
+			.add(BlockCostCounter::initialize(cost))
+			.expect("actual gas summation overflow");
 	}
 
 	fn increment_charged_cost(&mut self, node_id: NodeId, cost: BlockCostCounter) {
-		self.get_node_mut(node_id).charged_cost.add(cost).expect("charged gas summation overflow");
+		self.get_node_mut(node_id)
+			.charged_cost
+			.add(cost)
+			.expect("charged gas summation overflow");
 	}
 
 	fn set_first_instr_pos(&mut self, node_id: NodeId, first_instr_pos: usize) {
@@ -273,8 +279,12 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 	) -> bool {
 		let node = graph.get_node(node_id);
 
-		total_actual.add(node.actual_cost).expect("total charged gas summation overflow");
-		total_charged.add(node.charged_cost).expect("total charged gas summation overflow");
+		total_actual
+			.add(node.actual_cost)
+			.expect("total charged gas summation overflow");
+		total_charged
+			.add(node.charged_cost)
+			.expect("total charged gas summation overflow");
 
 		if node.is_loop_target {
 			loop_costs.insert(node_id, (node.actual_cost, node.charged_cost));

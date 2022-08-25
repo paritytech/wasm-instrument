@@ -314,15 +314,11 @@ impl BlockCostCounter {
 	const MAX_GAS_ARG: u32 = u32::MAX;
 
 	fn zero() -> Self {
-		Self { accumulated_overflows: 0, accumulator: 0 }
+		Self::initialize(0)
 	}
 
-	#[cfg(test)]
-	fn with_initial(cost: u32) -> Self {
-		Self {
-			accumulated_overflows: 0,
-			accumulator: cost,
-		}
+	fn initialize(initial_cost: u32) -> Self {
+		Self { accumulated_overflows: 0, accumulator: initial_cost }
 	}
 
 	fn add(&mut self, counter: BlockCostCounter) -> Result<(), ()> {
