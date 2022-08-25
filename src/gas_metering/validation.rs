@@ -8,7 +8,7 @@
 //! searching through all paths, which may take exponential time in the size of the function body in
 //! the worst case.
 
-use super::{ConstantCostRules, MeteredBlock, Rules};
+use super::{ConstantCostRules, MeteredBlock, Rules, BlockCostCounter};
 use parity_wasm::elements::{FuncBody, Instruction};
 use std::collections::BTreeMap as Map;
 
@@ -23,10 +23,10 @@ struct ControlFlowNode {
 	first_instr_pos: Option<usize>,
 
 	/// The actual gas cost of executing all instructions in the basic block.
-	actual_cost: u32,
+	actual_cost: BlockCostCounter,
 
 	/// The amount of gas charged by the injected metering instructions within this basic block.
-	charged_cost: u32,
+	charged_cost: BlockCostCounter,
 
 	/// Whether there are any other nodes in the graph that loop back to this one. Every cycle in
 	/// the control flow graph contains at least one node with this flag set.
@@ -68,11 +68,11 @@ impl ControlFlowGraph {
 	}
 
 	fn increment_actual_cost(&mut self, node_id: NodeId, cost: u32) {
-		self.get_node_mut(node_id).actual_cost += cost;
+		self.get_node_mut(node_id).actual_cost.add(BlockCostCounter::with_initial(cost)).expect("actual gas summation overflow");
 	}
 
-	fn increment_charged_cost(&mut self, node_id: NodeId, cost: u32) {
-		self.get_node_mut(node_id).charged_cost += cost;
+	fn increment_charged_cost(&mut self, node_id: NodeId, cost: BlockCostCounter) {
+		self.get_node_mut(node_id).charged_cost.add(cost).expect("charged gas summation overflow");
 	}
 
 	fn set_first_instr_pos(&mut self, node_id: NodeId, first_instr_pos: usize) {
@@ -267,14 +267,14 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 	fn visit(
 		graph: &ControlFlowGraph,
 		node_id: NodeId,
-		mut total_actual: u32,
-		mut total_charged: u32,
-		loop_costs: &mut Map<NodeId, (u32, u32)>,
+		mut total_actual: BlockCostCounter,
+		mut total_charged: BlockCostCounter,
+		loop_costs: &mut Map<NodeId, (BlockCostCounter, BlockCostCounter)>,
 	) -> bool {
 		let node = graph.get_node(node_id);
 
-		total_actual += node.actual_cost;
-		total_charged += node.charged_cost;
+		total_actual.add(node.actual_cost).expect("total charged gas summation overflow");
+		total_charged.add(node.charged_cost).expect("total charged gas summation overflow");
 
 		if node.is_loop_target {
 			loop_costs.insert(node_id, (node.actual_cost, node.charged_cost));
@@ -307,7 +307,7 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 	}
 
 	// Recursively explore all paths through the execution graph starting from the entry node.
-	visit(graph, 0, 0, 0, &mut Map::new())
+	visit(graph, 0, BlockCostCounter::zero(), BlockCostCounter::zero(), &mut Map::new())
 }
 
 /// Validate that the metered blocks are correct with respect to the function body by exhaustively
