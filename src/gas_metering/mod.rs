@@ -299,7 +299,7 @@ struct BlockCostCounter {
 	/// after adding it to the total cost of the measuring block (i.e. the
 	/// result of operation is greater than `u32::MAX`), the fields value
 	/// is incremented and the `accumulator` is replaced with the surplus.
-	accumulated_overflows: u32,
+	overflows: u32,
 	/// Block's cost accumulator.
 	accumulator: u32,
 }
@@ -309,7 +309,7 @@ impl BlockCostCounter {
 	///
 	/// This constant bounds maximum value of argument
 	/// in `gas` operation in order to prevent arithmetic
-	/// overflow. For more information see `accumulated_cost`
+	/// overflow. For more information see `overflows`
 	/// field doc comments.
 	const MAX_GAS_ARG: u32 = u32::MAX;
 
@@ -318,13 +318,13 @@ impl BlockCostCounter {
 	}
 
 	fn initialize(initial_cost: u32) -> Self {
-		Self { accumulated_overflows: 0, accumulator: initial_cost }
+		Self { overflows: 0, accumulator: initial_cost }
 	}
 
 	fn add(&mut self, counter: BlockCostCounter) -> Result<(), ()> {
-		self.accumulated_overflows = self
-			.accumulated_overflows
-			.checked_add(counter.accumulated_overflows)
+		self.overflows = self
+			.overflows
+			.checked_add(counter.overflows)
 			.ok_or(())?;
 		self.increment(counter.accumulator)
 	}
@@ -335,19 +335,25 @@ impl BlockCostCounter {
 		} else {
 			// Case when self.accumulator + val > Self::MAX_GAS_ARG
 			self.accumulator = val - (Self::MAX_GAS_ARG - self.accumulator);
-			self.accumulated_overflows = self.accumulated_overflows.checked_add(1).ok_or(())?;
+			self.overflows = self.overflows.checked_add(1).ok_or(())?;
 		}
 		Ok(())
 	}
 
-	fn block_costs(&self) -> Vec<u32> {
+	/// Returns amount of costs (possible charges) for each of which the gas charging
+	/// procedure will be called.
+	fn costs_num(&self) -> usize {
 		// Block's total cost consists of accumulated overflows and the remained in accumulator
 		// value
-		let mut accumulated_overflows = self.accumulated_overflows;
-		let mut costs = Vec::with_capacity((self.accumulated_overflows + 1) as usize);
-		while accumulated_overflows != 0 {
+		(self.overflows + 1) as usize
+	}
+
+	fn block_costs(&self) -> Vec<u32> {
+		let mut overflows = self.overflows;
+		let mut costs = Vec::with_capacity(self.costs_num());
+		while overflows != 0 {
 			costs.push(Self::MAX_GAS_ARG);
-			accumulated_overflows -= 1;
+			overflows -= 1;
 		}
 
 		if self.accumulator != 0 {
@@ -644,8 +650,7 @@ fn insert_metering_calls(
 ) -> Result<(), ()> {
 	use parity_wasm::elements::Instruction::*;
 
-	let block_cost_instrs =
-		blocks.iter().map(|block| block.cost.accumulated_overflows + 1).sum::<u32>() as usize;
+	let block_cost_instrs = calculate_blocks_costs_num(&blocks);
 	// To do this in linear time, construct a new vector of instructions, copying over old
 	// instructions one by one and injecting new ones as required.
 	let new_instrs_len = instructions.elements().len() + 2 * block_cost_instrs;
@@ -683,6 +688,11 @@ fn insert_metering_calls(
 	}
 
 	Ok(())
+}
+
+// Calculates total amount of costs (potential gas charging calls) in blocks
+fn calculate_blocks_costs_num(blocks: &[MeteredBlock]) -> usize {
+	blocks.iter().map(|block| block.cost.costs_num()).sum()
 }
 
 #[cfg(test)]
