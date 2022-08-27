@@ -16,6 +16,10 @@ The interface provided to smart contracts will adhere to semver with one excepti
 major version bumps will be backwards compatible with regard to already deployed contracts.
 In other words: Upgrading this pallet will not break pre-existing contracts.
 
+## [v0.2.1] 2022-08-27
+- Handle overflows while calculating cost of the block in the gas-metering algorithm
+[#29](https://github.com/paritytech/wasm-instrument/pull/29)
+
 ## [v0.2.0] 2022-06-06
 - Adjust debug information (if already parsed) when injecting gas metering
 [#16](https://github.com/paritytech/wasm-instrument/pull/16)
