@@ -708,6 +708,44 @@ mod tests {
 			.map(|func_body| func_body.code().elements())
 	}
 
+	fn prebuilt_simple_module() -> elements::Module {
+		builder::module()
+			.global()
+			.value_type()
+			.i32()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.build()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.with_instructions(elements::Instructions::new(vec![
+				Call(0),
+				If(elements::BlockType::NoResult),
+				Call(0),
+				Call(0),
+				Call(0),
+				Else,
+				Call(0),
+				Call(0),
+				End,
+				Call(0),
+				End,
+			]))
+			.build()
+			.build()
+			.build()
+	}
+
 	#[test]
 	fn simple_grow() {
 		let module = parse_wat(
@@ -763,43 +801,8 @@ mod tests {
 
 	#[test]
 	fn call_index() {
-		let module = builder::module()
-			.global()
-			.value_type()
-			.i32()
-			.build()
-			.function()
-			.signature()
-			.param()
-			.i32()
-			.build()
-			.body()
-			.build()
-			.build()
-			.function()
-			.signature()
-			.param()
-			.i32()
-			.build()
-			.body()
-			.with_instructions(elements::Instructions::new(vec![
-				Call(0),
-				If(elements::BlockType::NoResult),
-				Call(0),
-				Call(0),
-				Call(0),
-				Else,
-				Call(0),
-				Call(0),
-				End,
-				Call(0),
-				End,
-			]))
-			.build()
-			.build()
-			.build();
-
-		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
+		let injected_module =
+			inject(prebuilt_simple_module(), &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 1).unwrap(),
@@ -815,6 +818,46 @@ mod tests {
 				Call(1),
 				Else,
 				I32Const(2),
+				Call(0),
+				Call(1),
+				Call(1),
+				End,
+				Call(1),
+				End
+			][..]
+		);
+	}
+
+	#[test]
+	fn cost_overflow() {
+		let instruction_cost = u32::MAX / 2;
+		let injected_module =
+			inject(prebuilt_simple_module(), &ConstantCostRules::new(instruction_cost, 0), "env")
+				.unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 1).unwrap(),
+			&vec![
+				// (instruction_cost * 3) as i32 => ((2147483647 * 2) + 2147483647) as i32 =>
+				// ((2147483647 + 2147483647 + 1) + 2147483646) as i32 =>
+				// (u32::MAX as i32) + 2147483646 as i32
+				I32Const(-1),
+				Call(0),
+				I32Const((instruction_cost - 1) as i32),
+				Call(0),
+				Call(1),
+				If(elements::BlockType::NoResult),
+				// Same as upper
+				I32Const(-1),
+				Call(0),
+				I32Const((instruction_cost - 1) as i32),
+				Call(0),
+				Call(1),
+				Call(1),
+				Call(1),
+				Else,
+				// (instruction_cost * 2) as i32
+				I32Const(-2),
 				Call(0),
 				Call(1),
 				Call(1),
