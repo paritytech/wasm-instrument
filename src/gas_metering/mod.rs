@@ -288,7 +288,8 @@ struct MeteredBlock {
 }
 
 /// Metering block cost counter, which handles arithmetic overflows.
-#[derive(Debug, Copy, Clone, Default, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq, PartialOrd)]
+#[cfg_attr(test, derive(Copy, Clone, Default))]
 struct BlockCostCounter {
 	/// Amount of `MAX_GAS_ARG` costs accumulated while
 	/// measuring the cost of some metering block.
@@ -340,7 +341,7 @@ impl BlockCostCounter {
 		Ok(())
 	}
 
-	/// Returns amount of costs (possible charges) for each of which the gas charging
+	/// Returns amount of costs for each of which the gas charging
 	/// procedure will be called.
 	fn costs_num(&self) -> usize {
 		// Block's total cost consists of accumulated overflows and the remained in accumulator
