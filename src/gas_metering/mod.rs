@@ -296,8 +296,7 @@ impl BlockCostCounter {
 	///
 	/// This constant bounds maximum value of argument
 	/// in `gas` operation in order to prevent arithmetic
-	/// overflow. For more information see `overflows`
-	/// field doc comments.
+	/// overflow.
 	const MAX_GAS_ARG: u32 = u32::MAX;
 
 	fn zero() -> Self {
@@ -316,7 +315,7 @@ impl BlockCostCounter {
 	}
 
 	// Infallible incrementor which on each overflow enlarges the underlying vector, pushing there
-	// the `Self::MAX_GAS_ARG` (`u32::MAX`) and setting the surplus as the last element.
+	// the `Self::MAX_GAS_ARG` (`u32::MAX`) and inserting the surplus as the last element.
 	fn increment(&mut self, val: u32) {
 		let current_cost = self.0.last_mut().expect("type instantiates with at least one element");
 		if let Some(res) = current_cost.checked_add(val) {
@@ -332,14 +331,10 @@ impl BlockCostCounter {
 	/// Returns amount of costs for each of which the gas charging
 	/// procedure will be called.
 	fn costs_num(&self) -> usize {
-		// Block's total cost consists of accumulated overflows and the remained in accumulator
-		// value
 		self.0.len()
 	}
 
-	/// Returns the tuple of costs, where the first element is an amount of overflows
-	/// emerged when summating block's cost, and the second element is the current
-	/// (not overflowed remainder) block's cost.
+	/// Returns all the costs for the current block
 	fn block_costs(&self) -> &[u32] {
 		&self.0
 	}
