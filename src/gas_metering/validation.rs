@@ -146,7 +146,7 @@ fn build_control_flow_graph(
 		if apply_block {
 			let next_metered_block =
 				metered_blocks_iter.next().expect("peek returned an item; qed");
-			graph.increment_charged_cost(active_node_id, next_metered_block.cost.clone());
+			graph.increment_charged_cost(active_node_id, next_metered_block.cost);
 		}
 
 		let instruction_cost = rules.instruction_cost(instruction).ok_or(())?;
@@ -273,11 +273,11 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 	) -> bool {
 		let node = graph.get_node(node_id);
 
-		total_actual.add(node.actual_cost.clone());
-		total_charged.add(node.charged_cost.clone());
+		total_actual.add(node.actual_cost);
+		total_charged.add(node.charged_cost);
 
 		if node.is_loop_target {
-			loop_costs.insert(node_id, (node.actual_cost.clone(), node.charged_cost.clone()));
+			loop_costs.insert(node_id, (node.actual_cost, node.charged_cost));
 		}
 
 		if node.forward_edges.is_empty() && total_actual != total_charged {
@@ -294,8 +294,7 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 		}
 
 		for next_node_id in node.forward_edges.iter() {
-			if !visit(graph, *next_node_id, total_actual.clone(), total_charged.clone(), loop_costs)
-			{
+			if !visit(graph, *next_node_id, total_actual, total_charged, loop_costs) {
 				return false
 			}
 		}

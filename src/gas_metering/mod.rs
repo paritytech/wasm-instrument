@@ -288,15 +288,47 @@ struct MeteredBlock {
 }
 
 /// Metering block cost counter, which handles arithmetic overflows.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-struct BlockCostCounter(Vec<u32>);
+///
+/// Arithmetical overflows can occur while summarizing costs of some
+/// instruction set. To handle this, we count amount of such overflows
+/// with a separate counter and continue counting cost of metering block.
+///
+/// Obviously, overflows counter can overflow as well. A solution here
+/// could be usage of `Vec` each element of which is a separate counter
+/// of overflows. Once last overflow counter overflowed itself, a new is
+/// pushed to the vector and starts again. But this solution can be optimized
+/// after recognizing a property of this vector: all the elements before
+/// the last one are equal to `u32::MAX`, i.e. they all are overflowed
+/// counters of gas calculation overflows. So we can optimize the solution
+/// the next way: to avoid using `Vec` (redundant allocations on the heap)
+/// we can divide the vector into two fields:
+/// 1. Length of the vector's slice, each element of which has maximum
+/// value (`u32::MAX`). This field explicitly shows property we stated
+/// above.
+/// 2. Current overflows counter value, which is not overflowed yet.
+/// This field has the same semantics as the last element of the vector
+/// described earlier.
+///
+/// The latter optimization approach is implemented and 2 fields are introduced:
+/// `max_out_overflows_num` and `overflows`.
+#[derive(Debug, PartialEq, PartialOrd)]
+#[cfg_attr(test, derive(Copy, Clone, Default))]
+struct BlockCostCounter {
+	/// Amount of overflow counters that overflowed themselves.
+	/// For more info see type docs.
+	max_out_overflows_num: usize,
+	/// Current amount of overflows.
+	overflows: u32,
+	/// Block's cost accumulator.
+	accumulator: u32,
+}
 
 impl BlockCostCounter {
 	/// Maximum value of the `gas` call argument.
 	///
 	/// This constant bounds maximum value of argument
 	/// in `gas` operation in order to prevent arithmetic
-	/// overflow.
+	/// overflow. For more information see type docs.
 	const MAX_GAS_ARG: u32 = u32::MAX;
 
 	fn zero() -> Self {
@@ -304,45 +336,52 @@ impl BlockCostCounter {
 	}
 
 	fn initialize(initial_cost: u32) -> Self {
-		Self(vec![initial_cost])
+		Self { max_out_overflows_num: 0, overflows: 0, accumulator: initial_cost }
 	}
 
 	fn add(&mut self, counter: BlockCostCounter) {
-		let val = self.0.pop().expect("type instantiates with at least one element");
-
-		self.0.extend(counter.block_costs());
-		self.increment(val);
+		self.max_out_overflows_num += counter.max_out_overflows_num;
+		self.increment_overflow_counters(counter.overflows);
+		self.increment(counter.accumulator)
 	}
 
-	// Infallible incrementor which on each overflow enlarges the underlying vector, pushing there
-	// the `Self::MAX_GAS_ARG` (`u32::MAX`) and inserting the surplus as the last element.
 	fn increment(&mut self, val: u32) {
-		let current_cost = self.0.last_mut().expect("type instantiates with at least one element");
-		if let Some(res) = current_cost.checked_add(val) {
-			*current_cost = res;
+		if let Some(res) = self.accumulator.checked_add(val) {
+			self.accumulator = res;
 		} else {
-			// Case when current_cost + val > Self::MAX_GAS_ARG
-			let new_current_cost = val - (Self::MAX_GAS_ARG - *current_cost);
-			*current_cost = Self::MAX_GAS_ARG;
-			self.0.push(new_current_cost);
+			self.accumulator = val - (u32::MAX - self.accumulator);
+			self.increment_overflow_counters(1);
 		}
+	}
+
+	fn increment_overflow_counters(&mut self, val: u32) {
+		if let Some(res) = self.overflows.checked_add(val) {
+			self.overflows = res;
+		} else {
+			self.overflows = val - (u32::MAX - self.overflows);
+			self.max_out_overflows_num += 1;
+		}
+	}
+
+	/// Returns the tuple of costs, where the first element is an amount of overflows
+	/// emerged when summating block's cost, and the second element is the current
+	/// (not overflowed remainder) block's cost.
+	fn block_costs(&self) -> (usize, u32) {
+		(self.overflows_num(), self.accumulator)
 	}
 
 	/// Returns amount of costs for each of which the gas charging
 	/// procedure will be called.
 	fn costs_num(&self) -> usize {
-		self.0.len()
+		if self.accumulator != 0 {
+			self.overflows_num() + 1
+		} else {
+			self.overflows_num()
+		}
 	}
 
-	/// Returns all the costs for the current block
-	fn block_costs(&self) -> &[u32] {
-		&self.0
-	}
-}
-
-impl Default for BlockCostCounter {
-	fn default() -> Self {
-		Self::zero()
+	fn overflows_num(&self) -> usize {
+		u32::MAX as usize * self.max_out_overflows_num + self.overflows as usize
 	}
 }
 
@@ -631,8 +670,6 @@ fn insert_metering_calls(
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
-	use elements::Instruction::*;
-
 	let block_cost_instrs = calculate_blocks_costs_num(&blocks);
 	// To do this in linear time, construct a new vector of instructions, copying over old
 	// instructions one by one and injecting new ones as required.
@@ -646,10 +683,7 @@ fn insert_metering_calls(
 		// If there the next block starts at this position, inject metering instructions.
 		let used_block = if let Some(block) = block_iter.peek() {
 			if block.start_pos == original_pos {
-				for &cost in block.cost.block_costs() {
-					new_instrs.push(I32Const(cost as i32));
-					new_instrs.push(Call(gas_func));
-				}
+				insert_gas_call(new_instrs, block, gas_func);
 				true
 			} else {
 				false
@@ -676,6 +710,23 @@ fn insert_metering_calls(
 // Calculates total amount of costs (potential gas charging calls) in blocks
 fn calculate_blocks_costs_num(blocks: &[MeteredBlock]) -> usize {
 	blocks.iter().map(|block| block.cost.costs_num()).sum()
+}
+
+fn insert_gas_call(new_instrs: &mut Vec<Instruction>, current_block: &MeteredBlock, gas_func: u32) {
+	use parity_wasm::elements::Instruction::*;
+
+	let (mut overflows_num, current_cost) = current_block.cost.block_costs();
+	// First insert gas charging call with maximum argument due to overflows.
+	while overflows_num != 0 {
+		new_instrs.push(I32Const(BlockCostCounter::MAX_GAS_ARG as i32));
+		new_instrs.push(Call(gas_func));
+		overflows_num -= 1;
+	}
+	// Second insert remaining block's cost, if necessary.
+	if current_cost != 0 {
+		new_instrs.push(I32Const(current_cost as i32));
+		new_instrs.push(Call(gas_func));
+	}
 }
 
 #[cfg(test)]
