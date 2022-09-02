@@ -559,15 +559,6 @@ fn add_grow_counter<R: Rules>(
 	b.build()
 }
 
-fn inject_counter<R: Rules>(
-	instructions: &mut elements::Instructions,
-	rules: &R,
-	gas_func: u32,
-) -> Result<(), ()> {
-	let blocks = determine_metered_blocks(instructions, rules)?;
-	insert_metering_calls(instructions, blocks, gas_func)
-}
-
 fn determine_metered_blocks<R: Rules>(
 	instructions: &elements::Instructions,
 	rules: &R,
@@ -640,6 +631,15 @@ fn determine_metered_blocks<R: Rules>(
 
 	counter.finalized_blocks.sort_unstable_by_key(|block| block.start_pos);
 	Ok(counter.finalized_blocks)
+}
+
+fn inject_counter<R: Rules>(
+	instructions: &mut elements::Instructions,
+	rules: &R,
+	gas_func: u32,
+) -> Result<(), ()> {
+	let blocks = determine_metered_blocks(instructions, rules)?;
+	insert_metering_calls(instructions, blocks, gas_func)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
