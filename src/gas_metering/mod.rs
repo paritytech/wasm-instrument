@@ -288,37 +288,26 @@ struct MeteredBlock {
 }
 
 /// Metering block cost counter, which handles arithmetic overflows.
-///
-/// Arithmetical overflows can occur while summarizing costs of some
-/// instruction set. To handle this, we count amount of such overflows
-/// with a separate counter and continue counting cost of metering block.
-///
-/// Obviously, overflows counter can overflow as well. A solution here
-/// could be usage of `Vec` each element of which is a separate counter
-/// of overflows. Once last overflow counter overflowed itself, a new is
-/// pushed to the vector and starts again. But this solution can be optimized
-/// after recognizing a property of this vector: all the elements before
-/// the last one are equal to `u32::MAX`, i.e. they all are overflowed
-/// counters of gas calculation overflows. So we can optimize the solution
-/// the next way: to avoid using `Vec` (redundant allocations on the heap)
-/// we can divide the vector into two fields:
-/// 1. Length of the vector's slice, each element of which has maximum
-/// value (`u32::MAX`). This field explicitly shows property we stated
-/// above.
-/// 2. Current overflows counter value, which is not overflowed yet.
-/// This field has the same semantics as the last element of the vector
-/// described earlier.
-///
-/// The latter optimization approach is implemented and 2 fields are introduced:
-/// `max_out_overflows_num` and `overflows`.
 #[derive(Debug, PartialEq, PartialOrd)]
 #[cfg_attr(test, derive(Copy, Clone, Default))]
 struct BlockCostCounter {
-	/// Amount of overflow counters that overflowed themselves.
-	/// For more info see type docs.
-	max_out_overflows_num: usize,
-	/// Current amount of overflows.
-	overflows: u32,
+	/// Arithmetical overflows can occur while summarizing costs of some
+	/// instruction set. To handle this, we count amount of such overflows
+	/// with a separate counter and continue counting cost of metering block.
+	///
+	/// The overflow counter can overflow itself. However, this is not the
+	/// problem for the following reason. The returning after module instrumentation
+	/// set of instructions is a `Vec` which can't allocate more than `isize::MAX`
+	/// amount of memory, If, for instance, we are running the counter on the host
+	/// machine with 32 pointer size, reaching a huge amount of overflows can fail
+	/// instrumentation even if `overflows` is not overflowed, because we will
+	/// have a resulting set of instructions so big, that it will be impossible to
+	/// allocate a vector for it. So regardless of overflow of `overflows` field,
+	/// the field having huge value can fail instrumentation. This memory allocation
+	/// problem allows us to exhale and not think about the overflow of the
+	/// `overflows` field. What's more, the memory allocation problem (size of
+	/// instrumenting WASM) is a caller side concern.
+	overflows: usize,
 	/// Block's cost accumulator.
 	accumulator: u32,
 }
@@ -336,12 +325,12 @@ impl BlockCostCounter {
 	}
 
 	fn initialize(initial_cost: u32) -> Self {
-		Self { max_out_overflows_num: 0, overflows: 0, accumulator: initial_cost }
+		Self { overflows: 0, accumulator: initial_cost }
 	}
 
 	fn add(&mut self, counter: BlockCostCounter) {
-		self.max_out_overflows_num += counter.max_out_overflows_num;
-		self.increment_overflow_counters(counter.overflows);
+		// Overflow of `self.overflows` is not a big deal. See `overflows` field docs.
+		self.overflows = self.overflows.saturating_add(counter.overflows);
 		self.increment(counter.accumulator)
 	}
 
@@ -349,17 +338,10 @@ impl BlockCostCounter {
 		if let Some(res) = self.accumulator.checked_add(val) {
 			self.accumulator = res;
 		} else {
+			// Case when self.accumulator + val > Self::MAX_GAS_ARG
 			self.accumulator = val - (u32::MAX - self.accumulator);
-			self.increment_overflow_counters(1);
-		}
-	}
-
-	fn increment_overflow_counters(&mut self, val: u32) {
-		if let Some(res) = self.overflows.checked_add(val) {
-			self.overflows = res;
-		} else {
-			self.overflows = val - (u32::MAX - self.overflows);
-			self.max_out_overflows_num += 1;
+			// Overflow of `self.overflows` is not a big deal. See `overflows` field docs.
+			self.overflows = self.overflows.saturating_add(1);
 		}
 	}
 
@@ -367,21 +349,17 @@ impl BlockCostCounter {
 	/// emerged when summating block's cost, and the second element is the current
 	/// (not overflowed remainder) block's cost.
 	fn block_costs(&self) -> (usize, u32) {
-		(self.overflows_num(), self.accumulator)
+		(self.overflows, self.accumulator)
 	}
 
 	/// Returns amount of costs for each of which the gas charging
 	/// procedure will be called.
 	fn costs_num(&self) -> usize {
 		if self.accumulator != 0 {
-			self.overflows_num() + 1
+			self.overflows + 1
 		} else {
-			self.overflows_num()
+			self.overflows
 		}
-	}
-
-	fn overflows_num(&self) -> usize {
-		u32::MAX as usize * self.max_out_overflows_num + self.overflows as usize
 	}
 }
 
