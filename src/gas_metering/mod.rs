@@ -105,7 +105,7 @@ impl Rules for ConstantCostRules {
 /// imported gas metering function.
 ///
 /// The output module imports a function "gas" from the specified module with type signature
-/// [i32] -> []. The argument is the amount of gas required to continue execution. The external
+/// [i64] -> []. The argument is the amount of gas required to continue execution. The external
 /// function is meant to keep track of the total amount of gas used and trap or otherwise halt
 /// execution of the runtime if the gas usage exceeds some allowed limit.
 ///
