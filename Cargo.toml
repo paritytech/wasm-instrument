@@ -1,6 +1,6 @@
 [package]
 name = "wasm-instrument"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.56.1"
 authors = ["Parity Technologies <admin@parity.io>"]
@@ -27,6 +27,7 @@ parity-wasm = { version = "0.45", default-features = false }
 binaryen = "0.12"
 criterion = "0.3"
 diff = "0.1"
+pretty_assertions = "1"
 rand = "0.8"
 wat = "1"
 wasmparser = "0.90"

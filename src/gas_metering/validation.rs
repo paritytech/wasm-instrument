@@ -23,10 +23,10 @@ struct ControlFlowNode {
 	first_instr_pos: Option<usize>,
 
 	/// The actual gas cost of executing all instructions in the basic block.
-	actual_cost: u32,
+	actual_cost: u64,
 
 	/// The amount of gas charged by the injected metering instructions within this basic block.
-	charged_cost: u32,
+	charged_cost: u64,
 
 	/// Whether there are any other nodes in the graph that loop back to this one. Every cycle in
 	/// the control flow graph contains at least one node with this flag set.
@@ -68,10 +68,10 @@ impl ControlFlowGraph {
 	}
 
 	fn increment_actual_cost(&mut self, node_id: NodeId, cost: u32) {
-		self.get_node_mut(node_id).actual_cost += cost;
+		self.get_node_mut(node_id).actual_cost += u64::from(cost);
 	}
 
-	fn increment_charged_cost(&mut self, node_id: NodeId, cost: u32) {
+	fn increment_charged_cost(&mut self, node_id: NodeId, cost: u64) {
 		self.get_node_mut(node_id).charged_cost += cost;
 	}
 
@@ -267,9 +267,9 @@ fn validate_graph_gas_costs(graph: &ControlFlowGraph) -> bool {
 	fn visit(
 		graph: &ControlFlowGraph,
 		node_id: NodeId,
-		mut total_actual: u32,
-		mut total_charged: u32,
-		loop_costs: &mut Map<NodeId, (u32, u32)>,
+		mut total_actual: u64,
+		mut total_charged: u64,
+		loop_costs: &mut Map<NodeId, (u64, u64)>,
 	) -> bool {
 		let node = graph.get_node(node_id);
 
