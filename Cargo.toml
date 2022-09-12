@@ -25,7 +25,7 @@ parity-wasm = { version = "0.45", default-features = false }
 
 [dev-dependencies]
 binaryen = "0.12"
-criterion = "0.3"
+criterion = "0.4"
 diff = "0.1"
 pretty_assertions = "1"
 rand = "0.8"
