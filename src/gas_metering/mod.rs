@@ -51,7 +51,7 @@ pub enum MemoryGrowCost {
 }
 
 impl MemoryGrowCost {
-	/// True iff memory growths code needs to be injected.
+	/// True if memory growths code needs to be injected.
 	fn enabled(&self) -> bool {
 		match self {
 			Self::Free => false,
@@ -67,7 +67,7 @@ impl MemoryGrowCost {
 /// # Note
 ///
 /// In a production environment it usually makes no sense to assign every instruction
-/// the same cost. A proper implemention of [`Rules`] should be prived that is probably
+/// the same cost. A proper implemention of [`Rules`] should be provided that is probably
 /// created by benchmarking.
 pub struct ConstantCostRules {
 	instruction_cost: u32,
@@ -130,7 +130,7 @@ impl Rules for ConstantCostRules {
 /// The above transformations are performed for every function body defined in the module. This
 /// function also rewrites all function indices references by code, table elements, etc., since
 /// the addition of an imported functions changes the indices of module-defined functions. If the
-/// the module has a NameSection, added by calling `parse_names`, the indices will also be updated.
+/// module has a NameSection, added by calling `parse_names`, the indices will also be updated.
 ///
 /// This routine runs in time linear in the size of the input module.
 ///
