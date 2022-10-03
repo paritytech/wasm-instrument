@@ -141,7 +141,6 @@ pub fn inject<R: Rules>(
 	rules: &R,
 	gas_module_name: &str,
 ) -> Result<elements::Module, elements::Module> {
-	// Injecting gas counting external
 	let mut mbuilder = builder::from_module(module);
 	let import_sig =
 		mbuilder.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
@@ -156,29 +155,100 @@ pub fn inject<R: Rules>(
 	);
 
 	// back to plain module
-	let mut module = mbuilder.build();
+	let module = mbuilder.build();
 
 	// calculate actual function index of the imported definition
-	//    (subtract all imports that are NOT functions)
+	let gas_host_func_id =
+		(module.import_count(elements::ImportCountType::Function) as u32).saturating_sub(1);
 
-	let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
+	// Injecting gas counting global
+	let mut mbuilder = builder::from_module(module);
+	mbuilder.push_global(
+		builder::global()
+			.with_type(ValueType::I64) // TODO: sync type with gas type
+			.mutable()
+			.init_expr(Instruction::I64Const(0))
+			.build(),
+	);
+	let module = mbuilder.build();
+
+	let gas_global =
+		(module.import_count(elements::ImportCountType::Global) as u32).saturating_sub(1);
+
+	// add local gas counting fun
+	// TODO: remove, func draft
+	let _wasm_gas_local = r#"
+(func (param $gas i64)
+  global.get $gas_global
+  local.get $gas
+  i64.sub
+  global.set $gas_global
+  i64.const 0
+  i64.lt_s
+  (if
+   (then ;; out_of_gas
+      i64.const 0
+      call $gas
+   )
+  )
+)
+"#;
+
+	let fbuilder = builder::FunctionBuilder::new();
+	let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
+	let gas_local_func = fbuilder
+		.with_signature(gas_func_sig)
+		.body()
+		.with_instructions(elements::Instructions::new(vec![
+			Instruction::GetGlobal(gas_global),
+			Instruction::GetLocal(0),
+			Instruction::I64Sub,
+			Instruction::SetGlobal(gas_global),
+			Instruction::I64LtU,
+			Instruction::If(elements::BlockType::NoResult),
+			Instruction::I64Const(0),
+			Instruction::Call(gas_host_func_id),
+		]))
+		.build()
+		.build();
+
+	// Injecting local gas func into the module
+	let mut mbuilder = builder::from_module(module);
+	mbuilder.push_function(gas_local_func);
+	let mut module = mbuilder.build();
+
 	let total_func = module.functions_space() as u32;
+	let gas_local_func_id = total_func.clone();
+
 	let mut need_grow_counter = false;
 	let mut error = false;
 
-	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
+	// Updating:
+	// - calling addresses (all calls to function index >= `gas_func` should be incremented)
+	// - references to globals (all refs to global index >= 'gas_global', should be incremented,
+	//   because those are all non-imported ones)
 	for section in module.sections_mut() {
 		match section {
 			elements::Section::Code(code_section) =>
 				for func_body in code_section.bodies_mut() {
 					for instruction in func_body.code_mut().elements_mut().iter_mut() {
-						if let Instruction::Call(call_index) = instruction {
-							if *call_index >= gas_func {
-								*call_index += 1
-							}
+						match instruction {
+							Instruction::Call(call_index) =>
+								if *call_index >= gas_host_func_id {
+									*call_index += 1
+								},
+							Instruction::GetGlobal(glob_index) =>
+								if *glob_index >= gas_global {
+									*glob_index += 1
+								},
+							Instruction::SetGlobal(glob_index) =>
+								if *glob_index >= gas_global {
+									*glob_index += 1
+								},
+							_ => {},
 						}
 					}
-					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
+					if inject_counter(func_body.code_mut(), rules, gas_local_func_id).is_err() {
 						error = true;
 						break
 					}
@@ -190,10 +260,17 @@ pub fn inject<R: Rules>(
 				},
 			elements::Section::Export(export_section) => {
 				for export in export_section.entries_mut() {
-					if let elements::Internal::Function(func_index) = export.internal_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
+					match export.internal_mut() {
+						elements::Internal::Function(func_index) => {
+							if *func_index >= gas_host_func_id {
+								*func_index += 1
+							}
+						},
+						elements::Internal::Global(glob_index) =>
+							if *glob_index >= gas_global {
+								*glob_index += 1
+							},
+						_ => {},
 					}
 				}
 			},
@@ -203,21 +280,21 @@ pub fn inject<R: Rules>(
 				for segment in elements_section.entries_mut() {
 					// update all indirect call addresses initial values
 					for func_index in segment.members_mut() {
-						if *func_index >= gas_func {
+						if *func_index >= gas_host_func_id {
 							*func_index += 1
 						}
 					}
 				}
 			},
 			elements::Section::Start(start_idx) =>
-				if *start_idx >= gas_func {
+				if *start_idx >= gas_host_func_id {
 					*start_idx += 1
 				},
 			elements::Section::Name(s) =>
 				for functions in s.functions_mut() {
 					*functions.names_mut() =
 						IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-							if idx >= gas_func {
+							if idx >= gas_host_func_id {
 								idx += 1;
 							}
 
@@ -233,7 +310,7 @@ pub fn inject<R: Rules>(
 	}
 
 	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func))
+		Ok(add_grow_counter(module, rules, gas_local_func_id))
 	} else {
 		Ok(module)
 	}
@@ -469,8 +546,6 @@ fn add_grow_counter<R: Rules>(
 				I64ExtendUI32,
 				I64Const(i64::from(cost)),
 				I64Mul,
-				// todo: there should be strong guarantee that it does not return anything on
-				// stack?
 				Call(gas_func),
 				GrowMemory(0),
 				End,
