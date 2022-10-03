@@ -222,6 +222,7 @@ pub fn inject<R: Rules>(
 
 	let mut need_grow_counter = false;
 	let mut error = false;
+	let mut exported_funcs = Vec::new();
 
 	// Updating:
 	// - calling addresses (all calls to function index >= `gas_func` should be incremented)
@@ -265,6 +266,7 @@ pub fn inject<R: Rules>(
 							if *func_index >= gas_host_func_id {
 								*func_index += 1
 							}
+							exported_funcs.push(*func_index);
 						},
 						elements::Internal::Global(glob_index) =>
 							if *glob_index >= gas_global {
@@ -307,6 +309,31 @@ pub fn inject<R: Rules>(
 
 	if error {
 		return Err(module)
+	}
+
+	// for every exported func we need to update its signature to take gas_left param
+	let mut param_lengths = Vec::<(u32, usize)>::new();
+	if let Some(type_section) = module.type_section_mut() {
+		let func_types = type_section.types_mut();
+		for idx in exported_funcs {
+			match &mut func_types[idx as usize] {
+				elements::Type::Function(func_type) => {
+					func_type.params_mut().push(ValueType::I64);
+					param_lengths.push((idx, func_type.params().len()));
+				},
+			}
+		}
+	}
+
+	// for every exported func we also need to get global gas_left updated with this param val,
+	// at the very beginning of the func
+	if let Some(code_section) = module.code_section_mut() {
+		let func_bodies = code_section.bodies_mut();
+		for (idx, param_len) in param_lengths {
+			let instructions = func_bodies[idx as usize].code_mut().elements_mut();
+			instructions.insert(0, Instruction::SetGlobal(gas_global));
+			instructions.insert(0, Instruction::GetLocal(param_len as u32 - 1));
+		}
 	}
 
 	if need_grow_counter {
