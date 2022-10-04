@@ -107,7 +107,7 @@ mod gas {
 					let module = module.parse_names().expect("Failed to parse names");
 					let module = instrument::gas_metering::TestModule {
 						measuring_method:
-							instrument::gas_metering::MeasuringMethod::ReportEveryBlock,
+							instrument::gas_metering::MeteringMethod::ReportEveryBlock,
 						body: module,
 					};
 

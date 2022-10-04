@@ -104,16 +104,16 @@ impl Rules for ConstantCostRules {
 /// Interface providing three ways of wasm module instrumentation in order to make the module
 /// measurable in terms of gas consumption.
 ///
-/// These ways are described by the [`MeasuringMethod`] enum.
-pub trait GasMeasurable {
-	fn method(&self) -> MeasuringMethod;
+/// These ways are described by the [`MeteringMethod`] enum.
+pub trait GasMeterable {
+	fn method(&self) -> MeteringMethod;
 
 	fn module(&self) -> elements::Module;
 }
 
-/// Methods of implementing gas measuring for a wasm module.
+/// Methods of implementing gas metering for a wasm module.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum MeasuringMethod {
+pub enum MeteringMethod {
 	/// Method 1. _(default, backwards-compatible)_ Inject invocations of gas metering
 	/// host function into each metering block.
 	///   This is slow because calling imported functions is a heavy operation.
@@ -131,14 +131,15 @@ pub enum MeasuringMethod {
 	MutableGlobalTracker,
 }
 
+/// A type that implements [`GasMeterable`] to be used for development and testing.
 #[derive(Debug)]
 pub struct TestModule {
-	pub measuring_method: MeasuringMethod,
+	pub measuring_method: MeteringMethod,
 	pub body: elements::Module,
 }
 
-impl GasMeasurable for TestModule {
-	fn method(&self) -> MeasuringMethod {
+impl GasMeterable for TestModule {
+	fn method(&self) -> MeteringMethod {
 		self.measuring_method
 	}
 
@@ -182,7 +183,7 @@ impl GasMeasurable for TestModule {
 ///
 /// The function fails if the module contains any operation forbidden by gas rule set, returning
 /// the original module as an Err.
-pub fn inject<R: Rules, G: GasMeasurable>(
+pub fn inject<R: Rules, G: GasMeterable>(
 	input_module: G,
 	rules: &R,
 	gas_module_name: &str,
@@ -210,7 +211,7 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 	let mut gas_global_id = 0;
 
 	let method = input_module.method();
-	if method == MeasuringMethod::GlobalTracker {
+	if method == MeteringMethod::GlobalTracker {
 		// Injecting gas counting global
 		let mut mbuilder = builder::from_module(module.clone());
 		mbuilder.push_global(
@@ -251,7 +252,7 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 
 	let total_func = module.functions_space() as u32;
 
-	if method == MeasuringMethod::GlobalTracker {
+	if method == MeteringMethod::GlobalTracker {
 		// use local gas function, and it has the last index
 		gas_func_id = total_func.clone().saturating_sub(1);
 	}
@@ -275,7 +276,7 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 							if *call_index >= gas_host_func_id {
 								*call_index += 1
 							}
-						} else if method == MeasuringMethod::GlobalTracker {
+						} else if method == MeteringMethod::GlobalTracker {
 							match instruction {
 								Instruction::GetGlobal(glob_index) =>
 									if *glob_index >= gas_global_id {
@@ -306,7 +307,7 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 							*func_index += 1
 						}
 						exported_funcs.push(*func_index);
-					} else if method == MeasuringMethod::GlobalTracker {
+					} else if method == MeteringMethod::GlobalTracker {
 						match export.internal_mut() {
 							elements::Internal::Global(glob_index) =>
 								if *glob_index >= gas_global_id {
@@ -352,7 +353,7 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 		return Err(input_module)
 	}
 
-	if method == MeasuringMethod::GlobalTracker {
+	if method == MeteringMethod::GlobalTracker {
 		// for every exported func we need to update its signature to take gas_left param
 		let mut param_lengths = Vec::<(u32, usize)>::new();
 		if let Some(type_section) = module.type_section_mut() {
@@ -783,7 +784,7 @@ mod tests {
 			)"#,
 		);
 		let module =
-			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
+			TestModule { measuring_method: MeteringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000), "env").unwrap();
 
 		assert_eq!(
@@ -820,7 +821,7 @@ mod tests {
 			)",
 		);
 		let module =
-			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
+			TestModule { measuring_method: MeteringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
@@ -873,7 +874,7 @@ mod tests {
 			.build();
 
 		let module =
-			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
+			TestModule { measuring_method: MeteringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
@@ -912,7 +913,7 @@ mod tests {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
 				let module = TestModule {
-					measuring_method: MeasuringMethod::ReportEveryBlock,
+					measuring_method: MeteringMethod::ReportEveryBlock,
 					body: input_module,
 				};
 
