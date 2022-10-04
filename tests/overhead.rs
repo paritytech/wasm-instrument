@@ -14,7 +14,8 @@ fn fixture_dir() -> PathBuf {
 	path
 }
 
-/// Print the overhead of applying gas metering, stack height limiting or both.
+/// Print the overhead of applying gas metering with MeasuringMethod::ReportEveryBlock method, stack
+/// height limiting or both.
 ///
 /// Use `cargo test print_overhead -- --nocapture`.
 #[test]
@@ -30,8 +31,12 @@ fn print_size_overhead() {
 				(len, module)
 			};
 			let (gas_metering_len, gas_module) = {
+				let module = gas_metering::TestModule {
+					measuring_method: gas_metering::MeasuringMethod::ReportEveryBlock,
+					body: orig_module.clone(),
+				};
 				let module = gas_metering::inject(
-					orig_module.clone(),
+					module,
 					&gas_metering::ConstantCostRules::default(),
 					"env",
 				)

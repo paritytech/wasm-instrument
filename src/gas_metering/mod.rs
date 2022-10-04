@@ -112,9 +112,9 @@ pub trait GasMeasurable {
 }
 
 /// Methods of implementing gas measuring for a wasm module.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MeasuringMethod {
-	/// Method 1. _(legacy, left for backwards-compatibility)_ Inject invocations of gas metering
+	/// Method 1. _(default, backwards-compatible)_ Inject invocations of gas metering
 	/// host function into each metering block.
 	///   This is slow because calling imported functions is a heavy operation.
 	ReportEveryBlock,
@@ -131,9 +131,10 @@ pub enum MeasuringMethod {
 	MutableGlobalTracker,
 }
 
-struct TestModule {
-	measuring_method: MeasuringMethod,
-	body: elements::Module,
+#[derive(Debug)]
+pub struct TestModule {
+	pub measuring_method: MeasuringMethod,
+	pub body: elements::Module,
 }
 
 impl GasMeasurable for TestModule {
@@ -200,82 +201,95 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 	);
 
 	// back to plain module
-	let module = mbuilder.build();
-
+	let mut module = mbuilder.build();
 	// calculate actual function index of the imported definition
 	let gas_host_func_id =
 		(module.import_count(elements::ImportCountType::Function) as u32).saturating_sub(1);
+	// by default, call the imported gas function from inside metering blocks
+	let mut gas_func_id = gas_host_func_id;
+	let mut gas_global_id = 0;
 
-	// Injecting gas counting global
-	let mut mbuilder = builder::from_module(module);
-	mbuilder.push_global(
-		builder::global()
-			.with_type(ValueType::I64) // TODO: sync type with gas type
-			.mutable()
-			.init_expr(Instruction::I64Const(0))
-			.build(),
-	);
-	let module = mbuilder.build();
+	let method = input_module.method();
+	if method == MeasuringMethod::GlobalTracker {
+		// Injecting gas counting global
+		let mut mbuilder = builder::from_module(module.clone());
+		mbuilder.push_global(
+			builder::global()
+				.with_type(ValueType::I64) // TODO: sync type with gas type
+				.mutable()
+				.init_expr(Instruction::I64Const(0))
+				.build(),
+		);
+		module = mbuilder.build();
 
-	let gas_global =
-		(module.import_count(elements::ImportCountType::Global) as u32).saturating_sub(1);
+		gas_global_id =
+			(module.import_count(elements::ImportCountType::Global) as u32).saturating_sub(1);
 
-	let fbuilder = builder::FunctionBuilder::new();
-	let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
-	let gas_local_func = fbuilder
-		.with_signature(gas_func_sig)
-		.body()
-		.with_instructions(elements::Instructions::new(vec![
-			Instruction::GetGlobal(gas_global),
-			Instruction::GetLocal(0),
-			Instruction::I64Sub,
-			Instruction::SetGlobal(gas_global),
-			Instruction::I64LtU,
-			Instruction::If(elements::BlockType::NoResult),
-			Instruction::I64Const(0),
-			Instruction::Call(gas_host_func_id),
-		]))
-		.build()
-		.build();
+		let fbuilder = builder::FunctionBuilder::new();
+		let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
+		let gas_local_func = fbuilder
+			.with_signature(gas_func_sig)
+			.body()
+			.with_instructions(elements::Instructions::new(vec![
+				Instruction::GetGlobal(gas_global_id),
+				Instruction::GetLocal(0),
+				Instruction::I64Sub,
+				Instruction::SetGlobal(gas_global_id),
+				Instruction::I64LtU,
+				Instruction::If(elements::BlockType::NoResult),
+				Instruction::I64Const(0),
+				Instruction::Call(gas_func_id),
+			]))
+			.build()
+			.build();
 
-	// Injecting local gas func into the module
-	let mut mbuilder = builder::from_module(module);
-	mbuilder.push_function(gas_local_func);
-	let mut module = mbuilder.build();
+		// Injecting local gas func into the module
+		let mut mbuilder = builder::from_module(module);
+		mbuilder.push_function(gas_local_func);
+		module = mbuilder.build();
+	}
 
 	let total_func = module.functions_space() as u32;
-	let gas_local_func_id = total_func.clone();
 
+	if method == MeasuringMethod::GlobalTracker {
+		// use local gas function, and it has the last index
+		gas_func_id = total_func.clone().saturating_sub(1);
+	}
+
+	let mut exported_funcs = Vec::new();
 	let mut need_grow_counter = false;
 	let mut error = false;
-	let mut exported_funcs = Vec::new();
 
-	// Updating:
+	// Updating module sections.
+	// For all gas metering methods:
 	// - calling addresses (all calls to function index >= `gas_func` should be incremented)
-	// - references to globals (all refs to global index >= 'gas_global', should be incremented,
+	// For gas metering with global tracker:
+	// - references to globals (all refs to global index >= 'gas_global_id', should be incremented,
 	//   because those are all non-imported ones)
 	for section in module.sections_mut() {
 		match section {
 			elements::Section::Code(code_section) =>
 				for func_body in code_section.bodies_mut() {
 					for instruction in func_body.code_mut().elements_mut().iter_mut() {
-						match instruction {
-							Instruction::Call(call_index) =>
-								if *call_index >= gas_host_func_id {
-									*call_index += 1
-								},
-							Instruction::GetGlobal(glob_index) =>
-								if *glob_index >= gas_global {
-									*glob_index += 1
-								},
-							Instruction::SetGlobal(glob_index) =>
-								if *glob_index >= gas_global {
-									*glob_index += 1
-								},
-							_ => {},
+						if let Instruction::Call(call_index) = instruction {
+							if *call_index >= gas_host_func_id {
+								*call_index += 1
+							}
+						} else if method == MeasuringMethod::GlobalTracker {
+							match instruction {
+								Instruction::GetGlobal(glob_index) =>
+									if *glob_index >= gas_global_id {
+										*glob_index += 1
+									},
+								Instruction::SetGlobal(glob_index) =>
+									if *glob_index >= gas_global_id {
+										*glob_index += 1
+									},
+								_ => {},
+							}
 						}
 					}
-					if inject_counter(func_body.code_mut(), rules, gas_local_func_id).is_err() {
+					if inject_counter(func_body.code_mut(), rules, gas_func_id).is_err() {
 						error = true;
 						break
 					}
@@ -287,18 +301,19 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 				},
 			elements::Section::Export(export_section) => {
 				for export in export_section.entries_mut() {
-					match export.internal_mut() {
-						elements::Internal::Function(func_index) => {
-							if *func_index >= gas_host_func_id {
-								*func_index += 1
-							}
-							exported_funcs.push(*func_index);
-						},
-						elements::Internal::Global(glob_index) =>
-							if *glob_index >= gas_global {
-								*glob_index += 1
-							},
-						_ => {},
+					if let elements::Internal::Function(func_index) = export.internal_mut() {
+						if *func_index >= gas_host_func_id {
+							*func_index += 1
+						}
+						exported_funcs.push(*func_index);
+					} else if method == MeasuringMethod::GlobalTracker {
+						match export.internal_mut() {
+							elements::Internal::Global(glob_index) =>
+								if *glob_index >= gas_global_id {
+									*glob_index += 1
+								},
+							_ => {},
+						}
 					}
 				}
 			},
@@ -337,33 +352,35 @@ pub fn inject<R: Rules, G: GasMeasurable>(
 		return Err(input_module)
 	}
 
-	// for every exported func we need to update its signature to take gas_left param
-	let mut param_lengths = Vec::<(u32, usize)>::new();
-	if let Some(type_section) = module.type_section_mut() {
-		let func_types = type_section.types_mut();
-		for idx in exported_funcs {
-			match &mut func_types[idx as usize] {
-				elements::Type::Function(func_type) => {
-					func_type.params_mut().push(ValueType::I64);
-					param_lengths.push((idx, func_type.params().len()));
-				},
+	if method == MeasuringMethod::GlobalTracker {
+		// for every exported func we need to update its signature to take gas_left param
+		let mut param_lengths = Vec::<(u32, usize)>::new();
+		if let Some(type_section) = module.type_section_mut() {
+			let func_types = type_section.types_mut();
+			for idx in exported_funcs {
+				match &mut func_types[idx as usize] {
+					elements::Type::Function(func_type) => {
+						func_type.params_mut().push(ValueType::I64);
+						param_lengths.push((idx, func_type.params().len()));
+					},
+				}
+			}
+		}
+
+		// for every exported func we also need to get global gas_left updated with this param
+		// value, at the very beginning of the func
+		if let Some(code_section) = module.code_section_mut() {
+			let func_bodies = code_section.bodies_mut();
+			for (idx, param_len) in param_lengths {
+				let instructions = func_bodies[idx as usize].code_mut().elements_mut();
+				instructions.insert(0, Instruction::SetGlobal(gas_global_id));
+				instructions.insert(0, Instruction::GetLocal(param_len as u32 - 1));
 			}
 		}
 	}
 
-	// for every exported func we also need to get global gas_left updated with this param val,
-	// at the very beginning of the func
-	if let Some(code_section) = module.code_section_mut() {
-		let func_bodies = code_section.bodies_mut();
-		for (idx, param_len) in param_lengths {
-			let instructions = func_bodies[idx as usize].code_mut().elements_mut();
-			instructions.insert(0, Instruction::SetGlobal(gas_global));
-			instructions.insert(0, Instruction::GetLocal(param_len as u32 - 1));
-		}
-	}
-
 	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_local_func_id))
+		Ok(add_grow_counter(module, rules, gas_func_id))
 	} else {
 		Ok(module)
 	}
@@ -755,7 +772,7 @@ mod tests {
 	}
 
 	#[test]
-	fn simple_grow() {
+	fn simple_grow_method_1() {
 		let module = parse_wat(
 			r#"(module
 			(func (result i32)
@@ -765,7 +782,8 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-
+		let module =
+			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000), "env").unwrap();
 
 		assert_eq!(
@@ -791,7 +809,7 @@ mod tests {
 	}
 
 	#[test]
-	fn grow_no_gas_no_track() {
+	fn grow_no_gas_no_track_method_1() {
 		let module = parse_wat(
 			r"(module
 			(func (result i32)
@@ -801,7 +819,8 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-
+		let module =
+			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
@@ -816,7 +835,7 @@ mod tests {
 	}
 
 	#[test]
-	fn call_index() {
+	fn call_index_method_1() {
 		let module = builder::module()
 			.global()
 			.value_type()
@@ -853,6 +872,8 @@ mod tests {
 			.build()
 			.build();
 
+		let module =
+			TestModule { measuring_method: MeasuringMethod::ReportEveryBlock, body: module };
 		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
 
 		assert_eq!(
@@ -890,8 +911,12 @@ mod tests {
 			fn $name() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
+				let module = TestModule {
+					measuring_method: MeasuringMethod::ReportEveryBlock,
+					body: input_module,
+				};
 
-				let injected_module = inject(input_module, &ConstantCostRules::default(), "env")
+				let injected_module = inject(module, &ConstantCostRules::default(), "env")
 					.expect("inject_gas_counter call failed");
 
 				let actual_func_body = get_function_body(&injected_module, 0)
