@@ -101,6 +101,51 @@ impl Rules for ConstantCostRules {
 	}
 }
 
+/// Interface providing three ways of wasm module instrumentation in order to make the module
+/// measurable in terms of gas consumption.
+///
+/// These ways are described by the [`MeasuringMethod`] enum.
+pub trait GasMeasurable {
+	fn method(&self) -> MeasuringMethod;
+
+	fn module(&self) -> elements::Module;
+}
+
+/// Methods of implementing gas measuring for a wasm module.
+#[derive(Clone, Copy)]
+pub enum MeasuringMethod {
+	/// Method 1. _(legacy, left for backwards-compatibility)_ Inject invocations of gas metering
+	/// host function into each metering block.
+	///   This is slow because calling imported functions is a heavy operation.
+	ReportEveryBlock,
+	/// Method 2. Inject a global variable and a local function to the module to track current gas
+	/// left. Every metering block will call this local function now instead of an imported one. In
+	/// case of falling out of gas, call an imported function to fall with the proper error on the
+	/// engine side. To sync the global with the engine, inject an additional `gas_left` parameter
+	/// to every exported function in the module. Sticking to this way also requires adding a
+	/// parameter and a return value to each host function on the environment side, in order to
+	/// sync the gas_left values between the engine and the module.
+	GlobalTracker,
+	/// Method 3. (TBD) Same as 2., but use mutable-global wasm feature for the sync mechanics,
+	/// instead of wrapping functions with an additional parameter.
+	MutableGlobalTracker,
+}
+
+struct TestModule {
+	measuring_method: MeasuringMethod,
+	body: elements::Module,
+}
+
+impl GasMeasurable for TestModule {
+	fn method(&self) -> MeasuringMethod {
+		self.measuring_method
+	}
+
+	fn module(&self) -> elements::Module {
+		self.body.clone()
+	}
+}
+
 /// Transforms a given module into one that charges gas for code to be executed by proxy of an
 /// imported gas metering function.
 ///
@@ -136,12 +181,12 @@ impl Rules for ConstantCostRules {
 ///
 /// The function fails if the module contains any operation forbidden by gas rule set, returning
 /// the original module as an Err.
-pub fn inject<R: Rules>(
-	module: elements::Module,
+pub fn inject<R: Rules, G: GasMeasurable>(
+	input_module: G,
 	rules: &R,
 	gas_module_name: &str,
-) -> Result<elements::Module, elements::Module> {
-	let mut mbuilder = builder::from_module(module);
+) -> Result<elements::Module, G> {
+	let mut mbuilder = builder::from_module(input_module.module());
 	let import_sig =
 		mbuilder.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
 
@@ -174,25 +219,6 @@ pub fn inject<R: Rules>(
 
 	let gas_global =
 		(module.import_count(elements::ImportCountType::Global) as u32).saturating_sub(1);
-
-	// add local gas counting fun
-	// TODO: remove, func draft
-	let _wasm_gas_local = r#"
-(func (param $gas i64)
-  global.get $gas_global
-  local.get $gas
-  i64.sub
-  global.set $gas_global
-  i64.const 0
-  i64.lt_s
-  (if
-   (then ;; out_of_gas
-      i64.const 0
-      call $gas
-   )
-  )
-)
-"#;
 
 	let fbuilder = builder::FunctionBuilder::new();
 	let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
@@ -308,7 +334,7 @@ pub fn inject<R: Rules>(
 	}
 
 	if error {
-		return Err(module)
+		return Err(input_module)
 	}
 
 	// for every exported func we need to update its signature to take gas_left param
