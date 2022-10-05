@@ -106,12 +106,11 @@ mod gas {
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
 					let module = instrument::gas_metering::TestModule {
-						measuring_method:
-							instrument::gas_metering::MeteringMethod::ReportEveryBlock,
+						metered_with: instrument::gas_metering::MeteringMethod::HostFunction("env"),
 						body: module,
 					};
 
-					let instrumented = instrument::gas_metering::inject(module, &rules, "env")
+					let instrumented = instrument::gas_metering::inject(module, &rules)
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});
