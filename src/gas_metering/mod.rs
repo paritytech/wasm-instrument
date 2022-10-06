@@ -113,7 +113,7 @@ pub trait GasMeterable {
 
 /// Methods of implementing gas metering for a wasm module.
 /// See [`inject`] for more details.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum MeteringMethod<'a> {
 	/// Method 1. _(default, backwards-compatible)_ Inject invocations of gas charging
 	/// host function into each metering block. This is slow because calling imported functions is
