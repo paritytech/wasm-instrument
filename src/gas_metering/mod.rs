@@ -251,20 +251,18 @@ fn inject_mutable_global<R: Rules>(
 	// - references to globals (all refs to global index >= 'gas_global_idx', should be incremented,
 	//   because those are all non-imported ones)
 	for section in module.sections_mut() {
-		match section {
-			elements::Section::Code(code_section) =>
-				for func_body in code_section.bodies_mut() {
-					if inject_counter(func_body.code_mut(), rules, gas_func_idx).is_err() {
-						error = true;
-						break
-					}
-					if rules.memory_grow_cost().enabled() &&
-						inject_grow_counter(func_body.code_mut(), gas_func_idx + 1) > 0
-					{
-						need_grow_counter = true;
-					}
-				},
-			_ => {},
+		if let elements::Section::Code(code_section) = section {
+			for func_body in code_section.bodies_mut() {
+				if inject_counter(func_body.code_mut(), rules, gas_func_idx).is_err() {
+					error = true;
+					break
+				}
+				if rules.memory_grow_cost().enabled() &&
+					inject_grow_counter(func_body.code_mut(), gas_func_idx + 1) > 0
+				{
+					need_grow_counter = true;
+				}
+			}
 		}
 	}
 
