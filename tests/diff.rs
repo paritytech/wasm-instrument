@@ -44,9 +44,7 @@ fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: 
 
 	let actual_wat =
 		wasmprinter::print_bytes(&actual_wasm).expect("Failed to convert result wasm to wat");
-	println!("actual_wat:");
-	println!("{}", actual_wat);
-	println!("^^^^^^^^^^^^");
+
 	if actual_wat != expected_wat {
 		println!("difference!");
 		println!("--- {}", expected_path.display());

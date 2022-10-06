@@ -101,10 +101,10 @@ impl Rules for ConstantCostRules {
 	}
 }
 
-/// Interface providing three ways of wasm module instrumentation in order to make the module
+/// An interface providing two ways of wasm module instrumentation in order to make the module
 /// measurable in terms of gas consumption.
 ///
-/// These ways are described by the [`MeteringMethod`] enum.
+/// These ways are described in the [`MeteringMethod`] enum.
 pub trait GasMeterable {
 	fn method(&self) -> MeteringMethod;
 
@@ -112,6 +112,7 @@ pub trait GasMeterable {
 }
 
 /// Methods of implementing gas metering for a wasm module.
+/// See [`inject`] for more details.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MeteringMethod<'a> {
 	/// Method 1. _(default, backwards-compatible)_ Inject invocations of gas charging
@@ -154,7 +155,10 @@ impl<'a> GasMeterable for TestModule<'a> {
 /// - Injected imported host gas charging function calls,
 /// - Injected mutable global for gas tracking
 ///
-/// Imported host function
+/// By which of the two methods should the gas metering code be injected, should be determined by
+/// implementor of the [`GasMeterable`] trait.
+///
+/// ## Imported host function
 ///
 /// The output module imports a function "gas" from the specified module with type signature
 /// [i64] -> []. The argument is the amount of gas required to continue execution. The external
@@ -189,8 +193,14 @@ impl<'a> GasMeterable for TestModule<'a> {
 /// The function fails if the module contains any operation forbidden by gas rule set, returning
 /// the original module as an Err.
 ///
-/// Injected mutable global
-/// `TBD`
+/// ## Injected mutable global
+///
+/// The output module exports a mutable [i64] global with the specified name, which is used for
+/// tracking the gas left during execution. Overall mechanics are similar to the [Imported host
+/// function](#imported-host-function) method, aside from that a local injected gas counting
+/// function is called from each metering block intstead of an imported function, which should make
+/// the execution reasonably faster. Execution engine should take care of synchronizing the global
+/// with the runtime.
 pub fn inject<R: Rules, G: GasMeterable>(
 	input_module: G,
 	rules: &R,
@@ -212,7 +222,7 @@ fn inject_mutable_global<R: Rules>(
 	let mut mbuilder = builder::from_module(module);
 	mbuilder.push_global(
 		builder::global()
-			.with_type(ValueType::I64) // TODO: sync type with gas type
+			.with_type(ValueType::I64)
 			.mutable()
 			.init_expr(Instruction::I64Const(0))
 			.build(),
@@ -234,7 +244,6 @@ fn inject_mutable_global<R: Rules>(
 	let mut module = mbuilder.build();
 
 	let gas_func_idx = module.functions_space() as u32;
-
 	let mut need_grow_counter = false;
 	let mut error = false;
 
@@ -572,7 +581,7 @@ fn inject_grow_counter(instructions: &mut elements::Instructions, grow_counter_f
 	let mut counter = 0;
 	for instruction in instructions.elements_mut() {
 		if let GrowMemory(_) = *instruction {
-			*instruction = Call(grow_counter_func); // TBD: why we remove memory.grow instruction?
+			*instruction = Call(grow_counter_func);
 			counter += 1;
 		}
 	}
@@ -605,6 +614,8 @@ fn add_grow_counter<R: Rules>(
 				I64ExtendUI32,
 				I64Const(i64::from(cost)),
 				I64Mul,
+				// todo: there should be strong guarantee that it does not return anything on
+				// stack?
 				Call(gas_func),
 				GrowMemory(0),
 				End,
