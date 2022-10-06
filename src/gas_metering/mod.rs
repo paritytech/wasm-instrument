@@ -219,38 +219,10 @@ fn inject_mutable_global<R: Rules>(
 	);
 	// Need to build the module to get the index of the added global
 	let module = mbuilder.build();
-	let gas_global_idx =
-		(module.import_count(elements::ImportCountType::Global) as u32).saturating_sub(1);
-
-	// Injecting a local gas func into the module
-	let mut mbuilder = builder::from_module(module);
-	let fbuilder = builder::FunctionBuilder::new();
-	let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
-	let gas_func = fbuilder
-		.with_signature(gas_func_sig)
-		.body()
-		.with_instructions(elements::Instructions::new(vec![
-			Instruction::GetGlobal(gas_global_idx),
-			Instruction::GetLocal(0),
-			Instruction::I64Sub,
-			Instruction::SetLocal(0),
-			Instruction::GetLocal(0),
-			Instruction::I64Const(0),
-			Instruction::I64LtU,
-			Instruction::If(elements::BlockType::NoResult),
-			Instruction::I64Const(-1i64), // sentinel val u64::MAX
-			Instruction::SetGlobal(gas_global_idx),
-			Instruction::Unreachable,
-			Instruction::Else,
-			Instruction::GetLocal(0),
-			Instruction::SetGlobal(gas_global_idx),
-			Instruction::End,
-		]))
-		.build()
-		.build();
-	mbuilder.push_function(gas_func);
+	let gas_global_idx = (module.globals_space() as u32).saturating_sub(1);
 
 	// Injecting the export entry for the gas counting global
+	let mut mbuilder = builder::from_module(module);
 	let ebuilder = builder::ExportBuilder::new();
 	let global_export = ebuilder
 		.field(global_name)
@@ -261,8 +233,8 @@ fn inject_mutable_global<R: Rules>(
 	// Finally build the module
 	let mut module = mbuilder.build();
 
-	let total_func = module.functions_space() as u32;
-	let gas_func_idx = total_func.clone().saturating_sub(1);
+	let gas_func_idx = module.functions_space() as u32;
+
 	let mut need_grow_counter = false;
 	let mut error = false;
 
@@ -273,40 +245,16 @@ fn inject_mutable_global<R: Rules>(
 		match section {
 			elements::Section::Code(code_section) =>
 				for func_body in code_section.bodies_mut() {
-					for instruction in func_body.code_mut().elements_mut().iter_mut() {
-						match instruction {
-							Instruction::GetGlobal(glob_index) =>
-								if *glob_index >= gas_global_idx {
-									*glob_index += 1
-								},
-							Instruction::SetGlobal(glob_index) =>
-								if *glob_index >= gas_global_idx {
-									*glob_index += 1
-								},
-							_ => {},
-						}
-					}
 					if inject_counter(func_body.code_mut(), rules, gas_func_idx).is_err() {
 						error = true;
 						break
 					}
 					if rules.memory_grow_cost().enabled() &&
-						inject_grow_counter(func_body.code_mut(), total_func) > 0
+						inject_grow_counter(func_body.code_mut(), gas_func_idx + 1) > 0
 					{
 						need_grow_counter = true;
 					}
 				},
-			elements::Section::Export(export_section) => {
-				for export in export_section.entries_mut() {
-					match export.internal_mut() {
-						elements::Internal::Global(glob_index) =>
-							if *glob_index >= gas_global_idx {
-								*glob_index += 1
-							},
-						_ => {},
-					}
-				}
-			},
 			_ => {},
 		}
 	}
@@ -314,6 +262,8 @@ fn inject_mutable_global<R: Rules>(
 	if error {
 		return Err(module)
 	}
+
+	let module = add_gas_counter(module, gas_global_idx);
 
 	if need_grow_counter {
 		Ok(add_grow_counter(module, rules, gas_func_idx))
@@ -622,7 +572,7 @@ fn inject_grow_counter(instructions: &mut elements::Instructions, grow_counter_f
 	let mut counter = 0;
 	for instruction in instructions.elements_mut() {
 		if let GrowMemory(_) = *instruction {
-			*instruction = Call(grow_counter_func);
+			*instruction = Call(grow_counter_func); // TBD: why we remove memory.grow instruction?
 			counter += 1;
 		}
 	}
@@ -664,6 +614,36 @@ fn add_grow_counter<R: Rules>(
 	);
 
 	b.build()
+}
+
+fn add_gas_counter(module: elements::Module, gas_global_idx: u32) -> elements::Module {
+	let mut mbuilder = builder::from_module(module);
+	let fbuilder = builder::FunctionBuilder::new();
+	let gas_func_sig = builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
+	let gas_func = fbuilder
+		.with_signature(gas_func_sig)
+		.body()
+		.with_instructions(elements::Instructions::new(vec![
+			Instruction::GetGlobal(gas_global_idx),
+			Instruction::GetLocal(0),
+			Instruction::I64Sub,
+			Instruction::TeeLocal(0),
+			Instruction::I64Const(0),
+			Instruction::I64LtS,
+			Instruction::If(elements::BlockType::NoResult),
+			Instruction::I64Const(-1i64), // sentinel val u64::MAX
+			Instruction::SetGlobal(gas_global_idx),
+			Instruction::Unreachable,
+			Instruction::Else,
+			Instruction::GetLocal(0),
+			Instruction::SetGlobal(gas_global_idx),
+			Instruction::End,
+			Instruction::End,
+		]))
+		.build()
+		.build();
+	mbuilder.push_function(gas_func);
+	mbuilder.build()
 }
 
 fn determine_metered_blocks<R: Rules>(
@@ -811,7 +791,7 @@ mod tests {
 	}
 
 	#[test]
-	fn simple_grow_method_1() {
+	fn simple_grow_host_fn() {
 		let module = parse_wat(
 			r#"(module
 			(func (result i32)
@@ -847,7 +827,64 @@ mod tests {
 	}
 
 	#[test]
-	fn grow_no_gas_no_track_method_1() {
+	fn simple_grow_mut_global() {
+		let module = parse_wat(
+			r#"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)"#,
+		);
+		let module =
+			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
+		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000)).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 0).unwrap(),
+			&vec![I64Const(2), Call(1), GetGlobal(0), Call(2), End][..]
+		);
+		assert_eq!(
+			get_function_body(&injected_module, 1).unwrap(),
+			&vec![
+				Instruction::GetGlobal(1),
+				Instruction::GetLocal(0),
+				Instruction::I64Sub,
+				Instruction::TeeLocal(0),
+				Instruction::I64Const(0),
+				Instruction::I64LtS,
+				Instruction::If(elements::BlockType::NoResult),
+				Instruction::I64Const(-1i64),
+				Instruction::SetGlobal(1),
+				Instruction::Unreachable,
+				Instruction::Else,
+				Instruction::GetLocal(0),
+				Instruction::SetGlobal(1),
+				Instruction::End,
+				Instruction::End,
+			][..]
+		);
+		assert_eq!(
+			get_function_body(&injected_module, 2).unwrap(),
+			&vec![
+				GetLocal(0),
+				GetLocal(0),
+				I64ExtendUI32,
+				I64Const(10000),
+				I64Mul,
+				Call(1),
+				GrowMemory(0),
+				End,
+			][..]
+		);
+
+		let binary = serialize(injected_module).expect("serialization failed");
+		wasmparser::validate(&binary).unwrap();
+	}
+
+	#[test]
+	fn grow_no_gas_no_track_host_fn() {
 		let module = parse_wat(
 			r"(module
 			(func (result i32)
@@ -872,7 +909,33 @@ mod tests {
 	}
 
 	#[test]
-	fn call_index_method_1() {
+	fn grow_no_gas_no_track_mut_global() {
+		let module = parse_wat(
+			r"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)",
+		);
+		let module =
+			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
+		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 0).unwrap(),
+			&vec![I64Const(2), Call(1), GetGlobal(0), GrowMemory(0), End][..]
+		);
+
+		assert_eq!(injected_module.functions_space(), 2);
+
+		let binary = serialize(injected_module).expect("serialization failed");
+		wasmparser::validate(&binary).unwrap();
+	}
+
+	#[test]
+	fn call_index_host_fn() {
 		let module = builder::module()
 			.global()
 			.value_type()
@@ -936,15 +999,81 @@ mod tests {
 		);
 	}
 
+	#[test]
+	fn call_index_mut_global() {
+		let module = builder::module()
+			.global()
+			.value_type()
+			.i32()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.build()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.with_instructions(elements::Instructions::new(vec![
+				Call(0),
+				If(elements::BlockType::NoResult),
+				Call(0),
+				Call(0),
+				Call(0),
+				Else,
+				Call(0),
+				Call(0),
+				End,
+				Call(0),
+				End,
+			]))
+			.build()
+			.build()
+			.build();
+
+		let module =
+			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
+		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 1).unwrap(),
+			&vec![
+				I64Const(3),
+				Call(2),
+				Call(0),
+				If(elements::BlockType::NoResult),
+				I64Const(3),
+				Call(2),
+				Call(0),
+				Call(0),
+				Call(0),
+				Else,
+				I64Const(2),
+				Call(2),
+				Call(0),
+				Call(0),
+				End,
+				Call(0),
+				End
+			][..]
+		);
+	}
+
 	fn parse_wat(source: &str) -> elements::Module {
 		let module_bytes = wat::parse_str(source).unwrap();
 		elements::deserialize_buffer(module_bytes.as_ref()).unwrap()
 	}
 
 	macro_rules! test_gas_counter_injection {
-		(name = $name:ident; input = $input:expr; expected = $expected:expr) => {
+		(names = ($name1:ident, $name2:ident); input = $input:expr; expected = $expected:expr) => {
 			#[test]
-			fn $name() {
+			fn $name1() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
 				let module = TestModule {
@@ -962,11 +1091,31 @@ mod tests {
 
 				assert_eq!(actual_func_body, expected_func_body);
 			}
+
+			#[test]
+			fn $name2() {
+				let input_module = parse_wat($input);
+				let expected_module = parse_wat($expected.replace("call 0", "call 1").as_str());
+				let module = TestModule {
+					metered_with: MeteringMethod::MutableGlobal("gas_left"),
+					body: input_module,
+				};
+
+				let injected_module = inject(module, &ConstantCostRules::default())
+					.expect("inject_gas_counter call failed");
+
+				let actual_func_body = get_function_body(&injected_module, 0)
+					.expect("injected module must have a function body");
+				let expected_func_body = get_function_body(&expected_module, 0)
+					.expect("post-module must have a function body");
+
+				assert_eq!(actual_func_body, expected_func_body);
+			}
 		};
 	}
 
 	test_gas_counter_injection! {
-		name = simple;
+		names = (simple_host_fn, simple_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -981,7 +1130,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = nested;
+		names = (nested_host_fn, nested_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1006,7 +1155,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = ifelse;
+		names = (ifelse_host_fn, ifelse_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1041,7 +1190,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_innermost;
+		names = (branch_innermost_host_fn, branch_innermost_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1071,7 +1220,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_outer_block;
+		names = (branch_outer_block_host_fn, branch_outer_block_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1110,7 +1259,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_outer_loop;
+		names = (branch_outer_loop_host_fn, branch_outer_loop_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1156,7 +1305,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = return_from_func;
+		names = (return_from_func_host_fn, return_from_func_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1181,7 +1330,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_from_if_not_else;
+		names = (branch_from_if_not_else_host_fn, branch_from_if_not_else_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1217,7 +1366,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = empty_loop;
+		names = (empty_loop_host_fn, empty_loop_mut_global);
 		input = r#"
 		(module
 			(func
