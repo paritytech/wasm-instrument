@@ -51,7 +51,7 @@ pub enum MemoryGrowCost {
 }
 
 impl MemoryGrowCost {
-	/// True if memory growths code needs to be injected.
+	/// True iff memory growths code needs to be injected.
 	fn enabled(&self) -> bool {
 		match self {
 			Self::Free => false,
