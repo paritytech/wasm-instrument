@@ -44,7 +44,9 @@ fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: 
 
 	let actual_wat =
 		wasmprinter::print_bytes(&actual_wasm).expect("Failed to convert result wasm to wat");
-
+	println!("actual_wat:");
+	println!("{}", actual_wat);
+	println!("^^^^^^^^^^^^");
 	if actual_wat != expected_wat {
 		println!("difference!");
 		println!("--- {}", expected_path.display());
@@ -96,10 +98,10 @@ mod gas {
 	use super::*;
 
 	macro_rules! def_gas_test {
-		( $name:ident ) => {
+		( ($name1:ident, $name2:ident) ) => {
 			#[test]
-			fn $name() {
-				run_diff_test("gas", concat!(stringify!($name), ".wat"), |input| {
+			fn $name1() {
+				run_diff_test("gas", concat!(stringify!($name1), ".wat"), |input| {
 					let rules = instrument::gas_metering::ConstantCostRules::default();
 
 					let module: Module =
@@ -115,12 +117,33 @@ mod gas {
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});
 			}
+
+			#[test]
+			fn $name2() {
+				run_diff_test("gas", concat!(stringify!($name2), ".wat"), |input| {
+					let rules = instrument::gas_metering::ConstantCostRules::default();
+
+					let module: Module =
+						elements::deserialize_buffer(input).expect("Failed to deserialize");
+					let module = module.parse_names().expect("Failed to parse names");
+					let module = instrument::gas_metering::TestModule {
+						metered_with: instrument::gas_metering::MeteringMethod::MutableGlobal(
+							"gas_left",
+						),
+						body: module,
+					};
+
+					let instrumented = instrument::gas_metering::inject(module, &rules)
+						.expect("Failed to instrument with gas metering");
+					elements::serialize(instrumented).expect("Failed to serialize")
+				});
+			}
 		};
 	}
 
-	def_gas_test!(ifs);
-	def_gas_test!(simple);
-	def_gas_test!(start);
-	def_gas_test!(call);
-	def_gas_test!(branch);
+	def_gas_test!((ifs_host_fn, ifs_mut_global));
+	def_gas_test!((simple_host_fn, simple_mut_global));
+	def_gas_test!((start_host_fn, start_mut_global));
+	def_gas_test!((call_host_fn, call_mut_global));
+	def_gas_test!((branch_host_fn, branch_mut_global));
 }
