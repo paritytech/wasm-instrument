@@ -111,7 +111,7 @@ pub trait GasMeterable {
 	fn module(&self) -> elements::Module;
 }
 
-/// Methods of implementing gas metering for a wasm module.
+/// Methods for implementing gas metering for a wasm module.
 /// See [`inject`] for more details.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum MeteringMethod<'a> {
@@ -153,10 +153,10 @@ impl<'a> GasMeterable for TestModule<'a> {
 ///
 /// There are two methods available to accomplish this:
 /// - Injected imported host gas charging function calls,
-/// - Injected mutable global for gas tracking
+/// - Injected mutable global for gas tracking.
 ///
 /// By which of the two methods should the gas metering code be injected, should be determined by
-/// implementor of the [`GasMeterable`] trait.
+/// an implementor of the [`GasMeterable`] trait.
 ///
 /// ## Imported host function
 ///
