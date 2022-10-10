@@ -30,7 +30,7 @@ diff = "0.1"
 pretty_assertions = "1"
 rand = "0.8"
 wat = "1"
-wasmparser = "0.90"
+wasmparser = "0.92"
 wasmprinter = "0.2"
 
 [features]
