@@ -4,7 +4,7 @@ use std::{
 	io::{self, Read, Write},
 	path::{Path, PathBuf},
 };
-use wasm_instrument::{self as instrument, parity_wasm::elements};
+use wasm_instrument::{self as instrument, gas_metering::Backend, parity_wasm::elements};
 use wasmparser::validate;
 
 fn slurp<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
@@ -105,12 +105,10 @@ mod gas {
 					let module: Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
-					let module = instrument::gas_metering::TestModule {
-						metered_with: instrument::gas_metering::MeteringMethod::HostFunction("env"),
-						body: module,
-					};
+					let injector = instrument::gas_metering::ImportedFunctionInjector("env");
 
-					let instrumented = instrument::gas_metering::inject(module, &rules)
+					let instrumented = injector
+						.inject(&module, &rules)
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});
@@ -124,14 +122,9 @@ mod gas {
 					let module: Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
-					let module = instrument::gas_metering::TestModule {
-						metered_with: instrument::gas_metering::MeteringMethod::MutableGlobal(
-							"gas_left",
-						),
-						body: module,
-					};
-
-					let instrumented = instrument::gas_metering::inject(module, &rules)
+					let injector = instrument::gas_metering::MutableGlobalInjector("gas_left");
+					let instrumented = injector
+						.inject(&module, &rules)
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});

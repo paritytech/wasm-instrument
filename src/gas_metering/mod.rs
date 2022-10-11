@@ -4,6 +4,12 @@
 //! module into one that charges gas for code to be executed. See function documentation for usage
 //! and details.
 
+mod host_func;
+mod mut_global;
+
+pub use host_func::ImportedFunctionInjector;
+pub use mut_global::MutableGlobalInjector;
+
 #[cfg(test)]
 mod validation;
 
@@ -11,7 +17,7 @@ use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
 	builder,
-	elements::{self, IndexMap, Instruction, ValueType},
+	elements::{self, Instruction, ValueType},
 };
 
 /// An interface that describes instruction costs.
@@ -105,281 +111,65 @@ impl Rules for ConstantCostRules {
 /// measurable in terms of gas consumption.
 ///
 /// These ways are described in the [`MeteringMethod`] enum.
-pub trait GasMeterable {
-	fn method(&self) -> MeteringMethod;
-
-	fn module(&self) -> elements::Module;
-}
-
-/// Methods for implementing gas metering for a wasm module.
-/// See [`inject`] for more details.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub enum MeteringMethod<'a> {
-	/// Method 1. _(default, backwards-compatible)_ Inject invocations of gas charging
-	/// host function into each metering block. This is slow because calling imported functions is
-	/// a heavy operation.
+pub trait Backend {
+	/// Transforms a given module into one that tracks the gas charged during its execution.
 	///
-	/// `&str` value should contain the name of the module to import the `gas` function from.
-	HostFunction(&'a str),
-	/// Method 2. Inject a mutable global variable and a local function to the module to track
-	/// current gas left. The function is called in every metering block. In
-	/// case of falling out of gas, the global is set to the sentinel value `U64::MAX` and
-	/// `unreachable` instruction is called. The execution engine should take care of getting the
-	/// current global value and setting it back in order to sync the gas left value during the
-	/// execution.
+	/// There are two methods available to accomplish this:
+	/// - Injected imported host gas charging function calls,
+	/// - Injected mutable global for gas tracking.
 	///
-	/// `&str` value should contain the name of the gas tracking global.
-	MutableGlobal(&'a str),
-}
-
-/// A type that implements [`GasMeterable`] to be used for development and testing.
-#[derive(Debug)]
-pub struct TestModule<'a> {
-	pub metered_with: MeteringMethod<'a>,
-	pub body: elements::Module,
-}
-
-impl<'a> GasMeterable for TestModule<'a> {
-	fn method(&self) -> MeteringMethod<'a> {
-		self.metered_with
-	}
-
-	fn module(&self) -> elements::Module {
-		self.body.clone()
-	}
-}
-
-/// Transforms a given module into one that tracks the gas charged during its execution.
-///
-/// There are two methods available to accomplish this:
-/// - Injected imported host gas charging function calls,
-/// - Injected mutable global for gas tracking.
-///
-/// By which of the two methods should the gas metering code be injected, should be determined by
-/// an implementor of the [`GasMeterable`] trait.
-///
-/// ## Imported host function
-///
-/// The output module imports a function "gas" from the specified module with type signature
-/// [i64] -> []. The argument is the amount of gas required to continue execution. The external
-/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
-/// execution of the runtime if the gas usage exceeds some allowed limit.
-///
-/// The body of each function is divided into metered blocks, and the calls to charge gas are
-/// inserted at the beginning of every such block of code. A metered block is defined so that,
-/// unless there is a trap, either all of the instructions are executed or none are. These are
-/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
-/// blocks can be merged into a single metered block. This is the case if any path through the
-/// control flow graph containing one basic block also contains another.
-///
-/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
-/// executed are already paid for, 2) instructions that will not be executed are not charged for
-/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is that
-/// modules instrumented with this metering code may charge gas for instructions not executed in
-/// the event of a trap.
-///
-/// Additionally, each `memory.grow` instruction found in the module is instrumented to first make
-/// a call to charge gas for the additional pages requested. This cannot be done as part of the
-/// block level gas charges as the gas cost is not static and depends on the stack argument to
-/// `memory.grow`.
-///
-/// The above transformations are performed for every function body defined in the module. This
-/// function also rewrites all function indices references by code, table elements, etc., since
-/// the addition of an imported functions changes the indices of module-defined functions. If the
-/// module has a NameSection, added by calling `parse_names`, the indices will also be updated.
-///
-/// This routine runs in time linear in the size of the input module.
-///
-/// The function fails if the module contains any operation forbidden by gas rule set, returning
-/// the original module as an Err.
-///
-/// ## Injected mutable global
-///
-/// The output module exports a mutable [i64] global with the specified name, which is used for
-/// tracking the gas left during execution. Overall mechanics are similar to the [Imported host
-/// function](#imported-host-function) method, aside from that a local injected gas counting
-/// function is called from each metering block intstead of an imported function, which should make
-/// the execution reasonably faster. Execution engine should take care of synchronizing the global
-/// with the runtime.
-pub fn inject<R: Rules, G: GasMeterable>(
-	input_module: G,
-	rules: &R,
-) -> Result<elements::Module, elements::Module> {
-	match input_module.method() {
-		MeteringMethod::HostFunction(gas_module) =>
-			inject_host_function(input_module.module(), rules, gas_module),
-		MeteringMethod::MutableGlobal(global) =>
-			inject_mutable_global(input_module.module(), rules, global),
-	}
-}
-
-fn inject_mutable_global<R: Rules>(
-	module: elements::Module,
-	rules: &R,
-	global_name: &str,
-) -> Result<elements::Module, elements::Module> {
-	// Injecting the gas counting global
-	let mut mbuilder = builder::from_module(module);
-	mbuilder.push_global(
-		builder::global()
-			.with_type(ValueType::I64)
-			.mutable()
-			.init_expr(Instruction::I64Const(0))
-			.build(),
-	);
-	// Need to build the module to get the index of the added global
-	let module = mbuilder.build();
-	let gas_global_idx = (module.globals_space() as u32).saturating_sub(1);
-
-	// Injecting the export entry for the gas counting global
-	let mut mbuilder = builder::from_module(module);
-	let ebuilder = builder::ExportBuilder::new();
-	let global_export = ebuilder
-		.field(global_name)
-		.with_internal(elements::Internal::Global(gas_global_idx))
-		.build();
-	mbuilder.push_export(global_export);
-
-	// Finally build the module
-	let mut module = mbuilder.build();
-
-	let gas_func_idx = module.functions_space() as u32;
-	let mut need_grow_counter = false;
-	let mut error = false;
-
-	// Updating module sections.
-	// - references to globals (all refs to global index >= 'gas_global_idx', should be incremented,
-	//   because those are all non-imported ones)
-	for section in module.sections_mut() {
-		if let elements::Section::Code(code_section) = section {
-			for func_body in code_section.bodies_mut() {
-				if inject_counter(func_body.code_mut(), rules, gas_func_idx).is_err() {
-					error = true;
-					break
-				}
-				if rules.memory_grow_cost().enabled() &&
-					inject_grow_counter(func_body.code_mut(), gas_func_idx + 1) > 0
-				{
-					need_grow_counter = true;
-				}
-			}
-		}
-	}
-
-	if error {
-		return Err(module)
-	}
-
-	let module = add_gas_counter(module, gas_global_idx);
-
-	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func_idx))
-	} else {
-		Ok(module)
-	}
-}
-
-fn inject_host_function<R: Rules>(
-	module: elements::Module,
-	rules: &R,
-	gas_module_name: &str,
-) -> Result<elements::Module, elements::Module> {
-	// Injecting gas counting external
-	let mut mbuilder = builder::from_module(module);
-	let import_sig =
-		mbuilder.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
-
-	mbuilder.push_import(
-		builder::import()
-			.module(gas_module_name)
-			.field("gas")
-			.external()
-			.func(import_sig)
-			.build(),
-	);
-
-	// back to plain module
-	let mut module = mbuilder.build();
-
-	// calculate actual function index of the imported definition
-	//    (subtract all imports that are NOT functions)
-
-	let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
-	let total_func = module.functions_space() as u32;
-	let mut need_grow_counter = false;
-	let mut error = false;
-
-	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
-	for section in module.sections_mut() {
-		match section {
-			elements::Section::Code(code_section) =>
-				for func_body in code_section.bodies_mut() {
-					for instruction in func_body.code_mut().elements_mut().iter_mut() {
-						if let Instruction::Call(call_index) = instruction {
-							if *call_index >= gas_func {
-								*call_index += 1
-							}
-						}
-					}
-					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
-						error = true;
-						break
-					}
-					if rules.memory_grow_cost().enabled() &&
-						inject_grow_counter(func_body.code_mut(), total_func) > 0
-					{
-						need_grow_counter = true;
-					}
-				},
-			elements::Section::Export(export_section) => {
-				for export in export_section.entries_mut() {
-					if let elements::Internal::Function(func_index) = export.internal_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
-					}
-				}
-			},
-			elements::Section::Element(elements_section) => {
-				// Note that we do not need to check the element type referenced because in the
-				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				for segment in elements_section.entries_mut() {
-					// update all indirect call addresses initial values
-					for func_index in segment.members_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
-					}
-				}
-			},
-			elements::Section::Start(start_idx) =>
-				if *start_idx >= gas_func {
-					*start_idx += 1
-				},
-			elements::Section::Name(s) =>
-				for functions in s.functions_mut() {
-					*functions.names_mut() =
-						IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-							if idx >= gas_func {
-								idx += 1;
-							}
-
-							(idx, name.clone())
-						}));
-				},
-			_ => {},
-		}
-	}
-
-	if error {
-		return Err(module)
-	}
-
-	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func))
-	} else {
-		Ok(module)
-	}
+	/// By which of the two methods should the gas metering code be injected, should be determined
+	/// by an implementor of the [`GasMeterable`] trait.
+	///
+	/// ## Imported host function
+	///
+	/// The output module imports a function "gas" from the specified module with type signature
+	/// [i64] -> []. The argument is the amount of gas required to continue execution. The external
+	/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
+	/// execution of the runtime if the gas usage exceeds some allowed limit.
+	///
+	/// The body of each function is divided into metered blocks, and the calls to charge gas are
+	/// inserted at the beginning of every such block of code. A metered block is defined so that,
+	/// unless there is a trap, either all of the instructions are executed or none are. These are
+	/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
+	/// blocks can be merged into a single metered block. This is the case if any path through the
+	/// control flow graph containing one basic block also contains another.
+	///
+	/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
+	/// executed are already paid for, 2) instructions that will not be executed are not charged for
+	/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is
+	/// that modules instrumented with this metering code may charge gas for instructions not
+	/// executed in the event of a trap.
+	///
+	/// Additionally, each `memory.grow` instruction found in the module is instrumented to first
+	/// make a call to charge gas for the additional pages requested. This cannot be done as part of
+	/// the block level gas charges as the gas cost is not static and depends on the stack argument
+	/// to `memory.grow`.
+	///
+	/// The above transformations are performed for every function body defined in the module. This
+	/// function also rewrites all function indices references by code, table elements, etc., since
+	/// the addition of an imported functions changes the indices of module-defined functions. If
+	/// the module has a NameSection, added by calling `parse_names`, the indices will also be
+	/// updated.
+	///
+	/// This routine runs in time linear in the size of the input module.
+	///
+	/// The function fails if the module contains any operation forbidden by gas rule set, returning
+	/// the original module as an Err.
+	///
+	/// ## Injected mutable global
+	///
+	/// The output module exports a mutable [i64] global with the specified name, which is used for
+	/// tracking the gas left during execution. Overall mechanics are similar to the [Imported host
+	/// function](#imported-host-function) method, aside from that a local injected gas counting
+	/// function is called from each metering block intstead of an imported function, which should
+	/// make the execution reasonably faster. Execution engine should take care of synchronizing the
+	/// global with the runtime.
+	fn inject<R: Rules>(
+		&self,
+		input_module: &elements::Module,
+		rules: &R,
+	) -> Result<elements::Module, elements::Module>;
 }
 
 /// A control flow block is opened with the `block`, `loop`, and `if` instructions and is closed
@@ -810,8 +600,8 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-		let module = TestModule { metered_with: MeteringMethod::HostFunction("env"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000)).unwrap();
+		let injector = ImportedFunctionInjector("env");
+		let injected_module = injector.inject(&module, &ConstantCostRules::new(1, 10_000)).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -846,9 +636,8 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-		let module =
-			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000)).unwrap();
+		let injector = MutableGlobalInjector("gas_left");
+		let injected_module = injector.inject(&module, &ConstantCostRules::new(1, 10_000)).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -903,8 +692,8 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-		let module = TestModule { metered_with: MeteringMethod::HostFunction("env"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+		let injector = ImportedFunctionInjector("env");
+		let injected_module = injector.inject(&module, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -928,9 +717,8 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-		let module =
-			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+		let injector = MutableGlobalInjector("gas_left");
+		let injected_module = injector.inject(&module, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -981,8 +769,8 @@ mod tests {
 			.build()
 			.build();
 
-		let module = TestModule { metered_with: MeteringMethod::HostFunction("env"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+		let injector = ImportedFunctionInjector("env");
+		let injected_module = injector.inject(&module, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 1).unwrap(),
@@ -1046,9 +834,8 @@ mod tests {
 			.build()
 			.build();
 
-		let module =
-			TestModule { metered_with: MeteringMethod::MutableGlobal("gas_left"), body: module };
-		let injected_module = inject(module, &ConstantCostRules::default()).unwrap();
+		let injector = MutableGlobalInjector("gas_left");
+		let injected_module = injector.inject(&module, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 1).unwrap(),
@@ -1085,12 +872,9 @@ mod tests {
 			fn $name1() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
-				let module = TestModule {
-					metered_with: MeteringMethod::HostFunction("env"),
-					body: input_module,
-				};
-
-				let injected_module = inject(module, &ConstantCostRules::default())
+				let injector = ImportedFunctionInjector("env");
+				let injected_module = injector
+					.inject(&input_module, &ConstantCostRules::default())
 					.expect("inject_gas_counter call failed");
 
 				let actual_func_body = get_function_body(&injected_module, 0)
@@ -1105,12 +889,10 @@ mod tests {
 			fn $name2() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected.replace("call 0", "call 1").as_str());
-				let module = TestModule {
-					metered_with: MeteringMethod::MutableGlobal("gas_left"),
-					body: input_module,
-				};
+				let injector = MutableGlobalInjector("gas_left");
 
-				let injected_module = inject(module, &ConstantCostRules::default())
+				let injected_module = injector
+					.inject(&input_module, &ConstantCostRules::default())
 					.expect("inject_gas_counter call failed");
 
 				let actual_func_body = get_function_body(&injected_module, 0)

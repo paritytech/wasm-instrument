@@ -7,6 +7,8 @@ use wasm_instrument::{
 	parity_wasm::{deserialize_buffer, elements::Module, serialize},
 };
 
+use gas_metering::{Backend, ConstantCostRules, ImportedFunctionInjector};
+
 fn fixture_dir() -> PathBuf {
 	let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	path.push("benches");
@@ -14,7 +16,7 @@ fn fixture_dir() -> PathBuf {
 	path
 }
 
-/// Print the overhead of applying gas metering with MeteringMethod::HostFunction method, stack
+/// Print the overhead of applying gas metering with ImportedFunctionInjector, stack
 /// height limiting or both.
 ///
 /// Use `cargo test print_overhead -- --nocapture`.
@@ -31,13 +33,8 @@ fn print_size_overhead() {
 				(len, module)
 			};
 			let (gas_metering_len, gas_module) = {
-				let module = gas_metering::TestModule {
-					metered_with: gas_metering::MeteringMethod::HostFunction("env"),
-					body: orig_module.clone(),
-				};
-				let module =
-					gas_metering::inject(module, &gas_metering::ConstantCostRules::default())
-						.unwrap();
+				let injector = ImportedFunctionInjector("env");
+				let module = injector.inject(&orig_module, &ConstantCostRules::default()).unwrap();
 				let bytes = serialize(module.clone()).unwrap();
 				let len = bytes.len();
 				(len, module)
