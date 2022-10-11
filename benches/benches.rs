@@ -7,7 +7,7 @@ use std::{
 	path::PathBuf,
 };
 use wasm_instrument::{
-	gas_metering::{inject, ConstantCostRules, MeteringMethod, TestModule},
+	gas_metering::{Backend, ConstantCostRules, ImportedFunctionInjector},
 	inject_stack_limiter,
 	parity_wasm::{deserialize_buffer, elements::Module},
 };
@@ -37,11 +37,9 @@ where
 fn gas_metering(c: &mut Criterion) {
 	let mut group = c.benchmark_group("Gas Metering");
 	any_fixture(&mut group, |module| {
-		inject(
-			TestModule { body: module, metered_with: MeteringMethod::HostFunction("env") },
-			&ConstantCostRules::default(),
-		)
-		.unwrap();
+		ImportedFunctionInjector("env")
+			.inject(&module, &ConstantCostRules::default())
+			.unwrap();
 	});
 }
 
