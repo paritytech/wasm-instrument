@@ -6,17 +6,27 @@ use parity_wasm::{
 	elements::{self, Instruction, Module, ValueType},
 };
 
-pub struct MutableGlobalInjector<'a>(pub &'a str);
-
-/// Method 2. Inject a mutable global variable and a local function to the module to track
+/// Injects a mutable global variable and a local function to the module to track
 /// current gas left. The function is called in every metering block. In
 /// case of falling out of gas, the global is set to the sentinel value `U64::MAX` and
 /// `unreachable` instruction is called. The execution engine should take care of getting the
-/// current global value and setting it back in order to sync the gas left value during the
+/// current global value and setting it back in order to sync the gas left value during an
 /// execution.
-///
-/// `&str` value should contain the name of the gas tracking global.
+
+pub struct MutableGlobalInjector<'a>(
+	/// The export name of the gas tracking global.
+	pub &'a str,
+);
+
 impl Backend for MutableGlobalInjector<'_> {
+	/// Transforms a given module into one that tracks the gas charged during its execution.
+	///
+	/// The output module exports a mutable [i64] global with the specified name, which is used for
+	/// tracking the gas left during an execution. Overall mechanics are similar to the
+	/// [`ImportedFunctionInjector::inject()`][`super::ImportedFunctionInjector::inject`], aside
+	/// from that a local injected gas counting function is called from each metering block intstead
+	/// of an imported function, which should make the execution reasonably faster. Execution engine
+	/// should take care of synchronizing the global with the runtime.
 	fn inject<R: Rules>(&self, module: &Module, rules: &R) -> Result<Module, Module> {
 		// Injecting the gas counting global
 		let mut mbuilder = builder::from_module(module.clone());

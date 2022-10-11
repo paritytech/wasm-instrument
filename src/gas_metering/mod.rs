@@ -1,8 +1,8 @@
 //! This module is used to instrument a Wasm module with gas metering code.
 //!
-//! The primary public interface is the [`inject`] function which transforms a given
-//! module into one that charges gas for code to be executed. See function documentation for usage
-//! and details.
+//! The primary public interface is the [`Backend`] trait which provides a method for transforming a
+//! given module into one that charges gas for the code to be executed. See trait implementators
+//! documentation for usage and details.
 
 mod host_func;
 mod mut_global;
@@ -107,64 +107,10 @@ impl Rules for ConstantCostRules {
 	}
 }
 
-/// An interface providing two ways of wasm module instrumentation in order to make the module
+/// An interface providing means for a Wasm module instrumentation in order to make the module
 /// measurable in terms of gas consumption.
-///
-/// These ways are described in the [`MeteringMethod`] enum.
 pub trait Backend {
 	/// Transforms a given module into one that tracks the gas charged during its execution.
-	///
-	/// There are two methods available to accomplish this:
-	/// - Injected imported host gas charging function calls,
-	/// - Injected mutable global for gas tracking.
-	///
-	/// By which of the two methods should the gas metering code be injected, should be determined
-	/// by an implementor of the [`GasMeterable`] trait.
-	///
-	/// ## Imported host function
-	///
-	/// The output module imports a function "gas" from the specified module with type signature
-	/// [i64] -> []. The argument is the amount of gas required to continue execution. The external
-	/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
-	/// execution of the runtime if the gas usage exceeds some allowed limit.
-	///
-	/// The body of each function is divided into metered blocks, and the calls to charge gas are
-	/// inserted at the beginning of every such block of code. A metered block is defined so that,
-	/// unless there is a trap, either all of the instructions are executed or none are. These are
-	/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
-	/// blocks can be merged into a single metered block. This is the case if any path through the
-	/// control flow graph containing one basic block also contains another.
-	///
-	/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
-	/// executed are already paid for, 2) instructions that will not be executed are not charged for
-	/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is
-	/// that modules instrumented with this metering code may charge gas for instructions not
-	/// executed in the event of a trap.
-	///
-	/// Additionally, each `memory.grow` instruction found in the module is instrumented to first
-	/// make a call to charge gas for the additional pages requested. This cannot be done as part of
-	/// the block level gas charges as the gas cost is not static and depends on the stack argument
-	/// to `memory.grow`.
-	///
-	/// The above transformations are performed for every function body defined in the module. This
-	/// function also rewrites all function indices references by code, table elements, etc., since
-	/// the addition of an imported functions changes the indices of module-defined functions. If
-	/// the module has a NameSection, added by calling `parse_names`, the indices will also be
-	/// updated.
-	///
-	/// This routine runs in time linear in the size of the input module.
-	///
-	/// The function fails if the module contains any operation forbidden by gas rule set, returning
-	/// the original module as an Err.
-	///
-	/// ## Injected mutable global
-	///
-	/// The output module exports a mutable [i64] global with the specified name, which is used for
-	/// tracking the gas left during execution. Overall mechanics are similar to the [Imported host
-	/// function](#imported-host-function) method, aside from that a local injected gas counting
-	/// function is called from each metering block intstead of an imported function, which should
-	/// make the execution reasonably faster. Execution engine should take care of synchronizing the
-	/// global with the runtime.
 	fn inject<R: Rules>(
 		&self,
 		input_module: &elements::Module,
