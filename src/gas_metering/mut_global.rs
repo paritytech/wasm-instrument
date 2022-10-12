@@ -5,16 +5,16 @@ use parity_wasm::{
 };
 
 /// Injects a mutable global variable and a local function to the module to track
-/// current gas left. The function is called in every metering block. In
-/// case of falling out of gas, the global is set to the sentinel value `U64::MAX` and
-/// `unreachable` instruction is called. The execution engine should take care of getting the
-/// current global value and setting it back in order to sync the gas left value during an
-/// execution.
-
+/// current gas left.
+///
+/// The function is called in every metering block. In case of falling out of gas, the global is set
+/// to the sentinel value `U64::MAX` and `unreachable` instruction is called. The execution engine
+/// should take care of getting the current global value and setting it back in order to sync the
+/// gas left value during an execution.
 pub struct MutableGlobalInjector<'a> {
 	/// The export name of the gas tracking global.
 	pub global_name: &'a str,
-	/// index of the gas_left global
+	/// The index of the `gas_left` global.
 	gas_global_idx: u32,
 }
 
@@ -25,15 +25,6 @@ impl MutableGlobalInjector<'_> {
 }
 
 impl Backend for MutableGlobalInjector<'_> {
-	/// TBD: update
-	/// Transforms a given module into one that tracks the gas charged during its execution.
-	///
-	/// The output module exports a mutable [i64] global with the specified name, which is used for
-	/// tracking the gas left during an execution. Overall mechanics are similar to the
-	/// [`ImportedFunctionInjector::inject()`][`super::ImportedFunctionInjector::inject`], aside
-	/// from that a local injected gas counting function is called from each metering block intstead
-	/// of an imported function, which should make the execution reasonably faster. Execution engine
-	/// should take care of synchronizing the global with the runtime.
 	fn prepare(&mut self, module: &mut Module) -> (u32, u32) {
 		// Injecting the gas counting global
 		let mut mbuilder = builder::from_module(module.clone());
@@ -60,7 +51,7 @@ impl Backend for MutableGlobalInjector<'_> {
 		// Finally build the module
 		*module = mbuilder.build();
 
-		// we'll add a local gas_func later which get this idx
+		// Local gas_func is added later and gets this idx
 		let gas_func_idx = module.functions_space() as u32;
 		let total_funcs = gas_func_idx + 1;
 
