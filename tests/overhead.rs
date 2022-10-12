@@ -3,11 +3,10 @@ use std::{
 	path::PathBuf,
 };
 use wasm_instrument::{
-	gas_metering, inject_stack_limiter,
+	gas_metering::{self, ConstantCostRules, ImportedFunctionInjector},
+	inject_stack_limiter,
 	parity_wasm::{deserialize_buffer, elements::Module, serialize},
 };
-
-use gas_metering::{Backend, ConstantCostRules, ImportedFunctionInjector};
 
 fn fixture_dir() -> PathBuf {
 	let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -33,8 +32,13 @@ fn print_size_overhead() {
 				(len, module)
 			};
 			let (gas_metering_len, gas_module) = {
-				let injector = ImportedFunctionInjector("env");
-				let module = injector.inject(&orig_module, &ConstantCostRules::default()).unwrap();
+				let backend = ImportedFunctionInjector::new("env");
+				let module = gas_metering::inject(
+					orig_module.clone(),
+					backend,
+					&ConstantCostRules::default(),
+				)
+				.unwrap();
 				let bytes = serialize(module.clone()).unwrap();
 				let len = bytes.len();
 				(len, module)

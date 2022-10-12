@@ -1,10 +1,9 @@
-use parity_wasm::elements::Module;
 use std::{
 	fs,
 	io::{self, Read, Write},
 	path::{Path, PathBuf},
 };
-use wasm_instrument::{self as instrument, gas_metering::Backend, parity_wasm::elements};
+use wasm_instrument::{self as instrument, gas_metering, parity_wasm::elements};
 use wasmparser::validate;
 
 fn slurp<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
@@ -100,15 +99,14 @@ mod gas {
 			#[test]
 			fn $name1() {
 				run_diff_test("gas", concat!(stringify!($name1), ".wat"), |input| {
-					let rules = instrument::gas_metering::ConstantCostRules::default();
+					let rules = gas_metering::ConstantCostRules::default();
 
-					let module: Module =
+					let module: elements::Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
-					let injector = instrument::gas_metering::ImportedFunctionInjector("env");
+					let backend = gas_metering::ImportedFunctionInjector::new("env");
 
-					let instrumented = injector
-						.inject(&module, &rules)
+					let instrumented = gas_metering::inject(module, backend, &rules)
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});
@@ -117,14 +115,13 @@ mod gas {
 			#[test]
 			fn $name2() {
 				run_diff_test("gas", concat!(stringify!($name2), ".wat"), |input| {
-					let rules = instrument::gas_metering::ConstantCostRules::default();
+					let rules = gas_metering::ConstantCostRules::default();
 
-					let module: Module =
+					let module: elements::Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
-					let injector = instrument::gas_metering::MutableGlobalInjector("gas_left");
-					let instrumented = injector
-						.inject(&module, &rules)
+					let backend = gas_metering::MutableGlobalInjector::new("gas_left");
+					let instrumented = gas_metering::inject(module, backend, &rules)
 						.expect("Failed to instrument with gas metering");
 					elements::serialize(instrumented).expect("Failed to serialize")
 				});

@@ -1,19 +1,27 @@
-use crate::gas_metering::{add_grow_counter, inject_counter, inject_grow_counter, Backend, Rules};
+use crate::gas_metering::Backend;
 use parity_wasm::{
 	builder,
-	elements::{self, IndexMap, Instruction, Module, ValueType},
+	elements::{self, Module, ValueType},
 };
 
 /// Injects invocations of the gas charging host function into each metering block.
 ///
 /// This gas metering technique is slow because calling imported functions is a heavy operation. For
 /// a faster gas metering see [`MutableGlobalInjector`][`super::MutableGlobalInjector`].
-pub struct ImportedFunctionInjector<'a>(
+pub struct ImportedFunctionInjector<'a> {
 	/// The name of the module to import the `gas` function from.
-	pub &'a str,
-);
+	pub module: &'a str,
+	gas_func_idx: u32,
+}
+
+impl ImportedFunctionInjector<'_> {
+	pub fn new(module: &'static str) -> Self {
+		Self { module, gas_func_idx: u32::MAX }
+	}
+}
 
 impl Backend for ImportedFunctionInjector<'_> {
+	/// TBD: update
 	/// Transforms a given module into one that tracks the gas charged during its execution.
 	///
 	///
@@ -50,101 +58,34 @@ impl Backend for ImportedFunctionInjector<'_> {
 	///
 	/// The function fails if the module contains any operation forbidden by gas rule set, returning
 	/// the original module as an Err.
-	fn inject<R: Rules>(&self, module: &Module, rules: &R) -> Result<Module, Module> {
+	fn prepare(&mut self, module: &mut Module) -> (u32, u32) {
 		// Injecting gas counting external
 		let mut mbuilder = builder::from_module(module.clone());
 		let import_sig =
 			mbuilder.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
 		mbuilder.push_import(
 			builder::import()
-				.module(self.0)
+				.module(self.module)
 				.field("gas")
 				.external()
 				.func(import_sig)
 				.build(),
 		);
-
 		// back to plain module
-		let mut module = mbuilder.build();
-
+		*module = mbuilder.build();
 		// calculate actual function index of the imported definition
 		//    (subtract all imports that are NOT functions)
-		let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
+		self.gas_func_idx = module.import_count(elements::ImportCountType::Function) as u32 - 1;
 		let total_func = module.functions_space() as u32;
-		let mut need_grow_counter = false;
-		let mut error = false;
 
-		// Updating calling addresses (all calls to function index >= `gas_func` should be
-		// incremented)
-		for section in module.sections_mut() {
-			match section {
-				elements::Section::Code(code_section) =>
-					for func_body in code_section.bodies_mut() {
-						for instruction in func_body.code_mut().elements_mut().iter_mut() {
-							if let Instruction::Call(call_index) = instruction {
-								if *call_index >= gas_func {
-									*call_index += 1
-								}
-							}
-						}
-						if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
-							error = true;
-							break
-						}
-						if rules.memory_grow_cost().enabled() &&
-							inject_grow_counter(func_body.code_mut(), total_func) > 0
-						{
-							need_grow_counter = true;
-						}
-					},
-				elements::Section::Export(export_section) => {
-					for export in export_section.entries_mut() {
-						if let elements::Internal::Function(func_index) = export.internal_mut() {
-							if *func_index >= gas_func {
-								*func_index += 1
-							}
-						}
-					}
-				},
-				elements::Section::Element(elements_section) => {
-					// Note that we do not need to check the element type referenced because in the
-					// WebAssembly 1.0 spec, the only allowed element type is funcref.
-					for segment in elements_section.entries_mut() {
-						// update all indirect call addresses initial values
-						for func_index in segment.members_mut() {
-							if *func_index >= gas_func {
-								*func_index += 1
-							}
-						}
-					}
-				},
-				elements::Section::Start(start_idx) =>
-					if *start_idx >= gas_func {
-						*start_idx += 1
-					},
-				elements::Section::Name(s) =>
-					for functions in s.functions_mut() {
-						*functions.names_mut() =
-							IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-								if idx >= gas_func {
-									idx += 1;
-								}
+		(self.gas_func_idx, total_func)
+	}
 
-								(idx, name.clone())
-							}));
-					},
-				_ => {},
-			}
-		}
+	fn external_gas_func(&self) -> Option<u32> {
+		Some(self.gas_func_idx)
+	}
 
-		if error {
-			return Err(module)
-		}
-
-		if need_grow_counter {
-			Ok(add_grow_counter(module, rules, gas_func))
-		} else {
-			Ok(module)
-		}
+	fn local_gas_func(&self) -> Option<builder::FunctionDefinition> {
+		None
 	}
 }
