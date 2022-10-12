@@ -73,7 +73,7 @@ use wasmi::*;
 fn prepare_in_wasmi<P: Prepare + Backend>(
 	backend: P,
 	input: &[u8],
-) -> (TypedFunc<(), core::F32>, Store<u64>) {
+) -> (TypedFunc<(), core::F32>, Store<u64>, Instance) {
 	let module = deserialize_buffer(input).unwrap();
 
 	let instrumented_module = backend.inject(&module, &ConstantCostRules::default()).unwrap();
@@ -124,7 +124,7 @@ fn prepare_in_wasmi<P: Prepare + Backend>(
 		.typed::<(), core::F32, _>(&mut store)
 		.unwrap();
 
-	(run, store)
+	(run, store, instance)
 }
 
 fn gas_metered_coremark(c: &mut Criterion) {
@@ -133,30 +133,40 @@ fn gas_metered_coremark(c: &mut Criterion) {
 	let wasm_filename = "coremark_minimal.wasm";
 	let bytes = read(fixture_dir().join(wasm_filename)).unwrap();
 	//	group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
-	let (run, mut store) = prepare_in_wasmi(ImportedFunctionInjector("env"), &bytes);
+	let (run, mut store, _instance) = prepare_in_wasmi(ImportedFunctionInjector("env"), &bytes);
 	group.bench_function("with ImportedFunctionInjector", |bench| {
 		bench.iter(|| {
 			// call the wasm!
 			run.call(&mut store, ()).unwrap();
 		})
 	});
+	println!("gas spent: {}", u64::MAX - store.state());
 
 	// Benchmark MutableGlobalInjector
 	//	group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
-	let (run, mut store) = prepare_in_wasmi(MutableGlobalInjector("gas_left"), &bytes);
+	let (run, mut store, instance) = prepare_in_wasmi(MutableGlobalInjector("gas_left"), &bytes);
 	group.bench_function("with MutableGlobalInjector", |bench| {
 		bench.iter(|| {
 			// call the wasm!
 			run.call(&mut store, ()).unwrap();
 		})
 	});
+	let gas_left = instance
+		.get_export(&mut store, "gas_left")
+		.and_then(Extern::into_global)
+		.unwrap()
+		.get(&mut store);
+	if let core::Value::I64(gl) = gas_left {
+		println!("gas left: {}", gl);
+		println!("gas spent: {}", gl);
+	};
 }
 
 criterion_group!(benches, gas_metering, stack_height_limiter);
 criterion_group!(
 	name = contest_injectors;
 	config = Criterion::default()
-		.sample_size(100)
+		.sample_size(10)
 		.measurement_time(Duration::from_millis(250000))
 		.warm_up_time(Duration::from_millis(1000));
 	targets =
