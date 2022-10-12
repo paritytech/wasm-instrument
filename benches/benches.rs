@@ -9,7 +9,7 @@ use std::{
 use wasm_instrument::{
 	gas_metering::{Backend, ConstantCostRules, ImportedFunctionInjector, MutableGlobalInjector},
 	inject_stack_limiter,
-	parity_wasm::{deserialize_buffer, elements::Module},
+	parity_wasm::{deserialize_buffer, elements::Module, serialize},
 };
 
 fn fixture_dir() -> PathBuf {
@@ -51,31 +51,33 @@ fn stack_height_limiter(c: &mut Criterion) {
 }
 
 trait Prepare {
-	fn need_host_gas(&self) -> bool;
+	// true => gas host func needed,
+	// false => global init gas_left
+	fn gas_preps(&self) -> bool;
 }
 
 impl Prepare for ImportedFunctionInjector<'_> {
-	fn need_host_gas(&self) -> bool {
+	fn gas_preps(&self) -> bool {
 		true
 	}
 }
 
 impl Prepare for MutableGlobalInjector<'_> {
-	fn need_host_gas(&self) -> bool {
+	fn gas_preps(&self) -> bool {
 		false
 	}
 }
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wasmi::*;
-use wasmi_core::F32;
 fn prepare_in_wasmi<P: Prepare + Backend>(
 	backend: P,
 	input: &[u8],
-) -> (TypedFunc<(), F32>, Store<u64>) {
-	use std::time::{SystemTime, UNIX_EPOCH};
+) -> (TypedFunc<(), core::F32>, Store<u64>) {
 	let module = deserialize_buffer(input).unwrap();
 
-	let instrumented_module = backend.inject(&module, &ConstantCostRules::default());
+	let instrumented_module = backend.inject(&module, &ConstantCostRules::default()).unwrap();
+	let input = serialize(instrumented_module).unwrap();
 	// wasmi magic
 	let engine = Engine::default();
 	let module = wasmi::Module::new(&engine, &mut &input[..]).unwrap();
@@ -96,17 +98,30 @@ fn prepare_in_wasmi<P: Prepare + Backend>(
 
 	// link the host functions with the imported ones
 	let mut linker = <Linker<HostState>>::new();
-	if backend.need_host_gas() {
-		linker.define("env", "gas", host_gas).unwrap();
-	};
+	// clock for time measuring from the coremark wasm
 	linker.define("env", "clock_ms", host_clock_ms).unwrap();
+	// define host gas function if needed
+	if backend.gas_preps() {
+		linker.define("env", "gas", host_gas).unwrap();
+	}
+
 	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+
+	// set gas_left global if needed
+	if !backend.gas_preps() {
+		instance
+			.get_export(&mut store, "gas_left")
+			.and_then(Extern::into_global)
+			.unwrap()
+			.set(&mut store, core::Value::I64(i64::MAX))
+			.unwrap();
+	};
 
 	let run = instance
 		.get_export(&store, "run")
 		.and_then(Extern::into_func)
 		.unwrap()
-		.typed::<(), F32, _>(&mut store)
+		.typed::<(), core::F32, _>(&mut store)
 		.unwrap();
 
 	(run, store)
@@ -129,7 +144,7 @@ fn gas_metered_coremark(c: &mut Criterion) {
 	// Benchmark MutableGlobalInjector
 	//	group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
 	let (run, mut store) = prepare_in_wasmi(MutableGlobalInjector("gas_left"), &bytes);
-	group.bench_function("metered with MutableGlobalInjector", |bench| {
+	group.bench_function("with MutableGlobalInjector", |bench| {
 		bench.iter(|| {
 			// call the wasm!
 			run.call(&mut store, ()).unwrap();
@@ -137,6 +152,14 @@ fn gas_metered_coremark(c: &mut Criterion) {
 	});
 }
 
-//criterion_group!(benches, gas_metering, stack_height_limiter);
-criterion_group!(benches, gas_metered_coremark);
-criterion_main!(benches);
+criterion_group!(benches, gas_metering, stack_height_limiter);
+criterion_group!(
+	name = contest_injectors;
+	config = Criterion::default()
+		.sample_size(100)
+		.measurement_time(Duration::from_millis(250000))
+		.warm_up_time(Duration::from_millis(1000));
+	targets =
+		 gas_metered_coremark,
+);
+criterion_main!(benches, contest_injectors);
