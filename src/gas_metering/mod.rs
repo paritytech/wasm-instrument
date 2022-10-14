@@ -1,14 +1,12 @@
-//! This module is used to instrument a Wasm module with gas metering code.
+//! This module is used to instrument a Wasm module with a gas metering code.
 //!
-//! The primary public interface is the [`Backend`] trait which provides a method for transforming a
-//! given module into one that charges gas for the code to be executed. See trait implementators
-//! documentation for usage and details.
+//! The primary public interface is the [`inject`] function which transforms a given
+//! module into one that charges gas for code to be executed. See function documentation for usage
+//! and details.
 
-mod host_func;
-mod mut_global;
+mod backend;
 
-pub use host_func::ImportedFunctionInjector;
-pub use mut_global::MutableGlobalInjector;
+pub use backend::{host_function, mutable_global, Backend, GasMeter};
 
 #[cfg(test)]
 mod validation;
@@ -16,7 +14,7 @@ mod validation;
 use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
-	builder::{self, FunctionDefinition},
+	builder,
 	elements::{self, IndexMap, Instruction, ValueType},
 };
 
@@ -105,19 +103,6 @@ impl Rules for ConstantCostRules {
 	fn memory_grow_cost(&self) -> MemoryGrowCost {
 		NonZeroU32::new(self.memory_grow_cost).map_or(MemoryGrowCost::Free, MemoryGrowCost::Linear)
 	}
-}
-
-/// TBD
-pub enum GasMeter {
-	External { module: &'static str, function: &'static str },
-	Internal { global: &'static str, function: FunctionDefinition },
-}
-
-/// An interface providing means for a Wasm module instrumentation in order to make the module
-/// measurable in terms of gas consumption.
-pub trait Backend {
-	/// Prepares module for the instrumentation. Adds needed imports/exports/globals to the module.
-	fn gas_meter(self, module: elements::Module) -> GasMeter;
 }
 
 /// Transforms a given module into one that tracks the gas charged during its execution.
@@ -707,7 +692,7 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-		let backend = ImportedFunctionInjector::new("env", "gas");
+		let backend = host_function::Injector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
 
@@ -744,7 +729,7 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-		let backend = MutableGlobalInjector::new("gas_left");
+		let backend = mutable_global::Injector::new("gas_left");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
 
@@ -801,7 +786,7 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-		let backend = ImportedFunctionInjector::new("env", "gas");
+		let backend = host_function::Injector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -827,7 +812,7 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-		let backend = MutableGlobalInjector::new("gas_left");
+		let backend = mutable_global::Injector::new("gas_left");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -880,7 +865,7 @@ mod tests {
 			.build()
 			.build();
 
-		let backend = ImportedFunctionInjector::new("env", "gas");
+		let backend = host_function::Injector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -946,7 +931,7 @@ mod tests {
 			.build()
 			.build();
 
-		let backend = MutableGlobalInjector::new("gas_left");
+		let backend = mutable_global::Injector::new("gas_left");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -985,7 +970,7 @@ mod tests {
 			fn $name1() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
-				let backend = ImportedFunctionInjector::new("env", "gas");
+				let backend = host_function::Injector::new("env", "gas");
 				let injected_module =
 					super::inject(input_module, backend, &ConstantCostRules::default())
 						.expect("inject_gas_counter call failed");
@@ -1002,7 +987,7 @@ mod tests {
 			fn $name2() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected.replace("call 0", "call 1").as_str());
-				let backend = MutableGlobalInjector::new("gas_left");
+				let backend = mutable_global::Injector::new("gas_left");
 
 				let injected_module =
 					super::inject(input_module, backend, &ConstantCostRules::default())
