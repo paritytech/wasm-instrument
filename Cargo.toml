@@ -33,7 +33,6 @@ wat = "1"
 wasmparser = "0.90"
 wasmprinter = "0.2"
 wasmi = "0.18"
-wasmi_core = "0.4"
 
 [features]
 default = ["std"]

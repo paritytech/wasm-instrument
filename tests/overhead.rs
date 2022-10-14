@@ -32,7 +32,7 @@ fn print_size_overhead() {
 				(len, module)
 			};
 			let (gas_metering_len, gas_module) = {
-				let backend = ImportedFunctionInjector::new("env");
+				let backend = ImportedFunctionInjector::new("env", "gas");
 				let module = gas_metering::inject(
 					orig_module.clone(),
 					backend,

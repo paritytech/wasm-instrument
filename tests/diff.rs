@@ -104,7 +104,7 @@ mod gas {
 					let module: elements::Module =
 						elements::deserialize_buffer(input).expect("Failed to deserialize");
 					let module = module.parse_names().expect("Failed to parse names");
-					let backend = gas_metering::ImportedFunctionInjector::new("env");
+					let backend = gas_metering::ImportedFunctionInjector::new("env", "gas");
 
 					let instrumented = gas_metering::inject(module, backend, &rules)
 						.expect("Failed to instrument with gas metering");

@@ -16,7 +16,7 @@ mod validation;
 use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
-	builder,
+	builder::{self, FunctionDefinition},
 	elements::{self, IndexMap, Instruction, ValueType},
 };
 
@@ -107,20 +107,17 @@ impl Rules for ConstantCostRules {
 	}
 }
 
+/// TBD
+pub enum GasMeter {
+	External { module: &'static str, function: &'static str },
+	Internal { global: &'static str, function: FunctionDefinition },
+}
+
 /// An interface providing means for a Wasm module instrumentation in order to make the module
 /// measurable in terms of gas consumption.
 pub trait Backend {
 	/// Prepares module for the instrumentation. Adds needed imports/exports/globals to the module.
-	/// Returns (`gas_func_idx`, `total_func`), where
-	/// - `gas_func_idx` is the calling index of the gas function called from metering blocks,
-	/// - `total_func` is total number of functions in the module.
-	fn prepare(&mut self, module: &mut elements::Module) -> (u32, u32);
-
-	/// Returns the calling index of the imported gas function, if any.
-	fn external_gas_func(&self) -> Option<u32>;
-
-	/// Returns the definition of the local gas function, if any.
-	fn local_gas_func(&self) -> Option<builder::FunctionDefinition>;
+	fn gas_meter(self, module: elements::Module) -> GasMeter;
 }
 
 /// Transforms a given module into one that tracks the gas charged during its execution.
@@ -161,11 +158,60 @@ pub trait Backend {
 /// the original module as an `Err`.
 pub fn inject<R: Rules, B: Backend>(
 	mut module: elements::Module,
-	mut backend: B,
+	backend: B,
 	rules: &R,
 ) -> Result<elements::Module, elements::Module> {
-	// Prepare module and return the calling index of the gas function and total number of functions
-	let (gas_func_idx, total_func) = backend.prepare(&mut module);
+	// Prepare module and return the gas function
+	let gas_func = backend.gas_meter(module.clone());
+
+	let mut mbuilder = builder::from_module(module.clone());
+
+	// Calcutate the indexes
+	let (gas_func_idx, total_func) = match gas_func {
+		GasMeter::External { module: gas_module, function } => {
+			// Inject the import of the gas function
+			let import_sig = mbuilder
+				.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
+			mbuilder.push_import(
+				builder::import()
+					.module(gas_module)
+					.field(function)
+					.external()
+					.func(import_sig)
+					.build(),
+			);
+
+			(
+				module.import_count(elements::ImportCountType::Function) as u32,
+				module.functions_space() as u32 + 1,
+			)
+		},
+		GasMeter::Internal { global, function: _ } => {
+			// Inject the gas counting global
+			mbuilder.push_global(
+				builder::global()
+					.with_type(ValueType::I64)
+					.mutable()
+					.init_expr(Instruction::I64Const(0))
+					.build(),
+			);
+			// Inject the export entry for the gas counting global
+			let ebuilder = builder::ExportBuilder::new();
+			let gas_global_idx = (module.globals_space() as u32).saturating_sub(1);
+			let global_export = ebuilder
+				.field(global)
+				.with_internal(elements::Internal::Global(gas_global_idx))
+				.build();
+			mbuilder.push_export(global_export);
+
+			let func_idx = module.functions_space() as u32;
+			(func_idx, func_idx + 1)
+		},
+	};
+
+	// Build the module
+	module = mbuilder.build();
+
 	let mut need_grow_counter = false;
 	let mut error = false;
 
@@ -175,10 +221,10 @@ pub fn inject<R: Rules, B: Backend>(
 			elements::Section::Code(code_section) =>
 				for func_body in code_section.bodies_mut() {
 					// Increment calling addresses if needed
-					if let Some(gas_func) = backend.external_gas_func() {
+					if let GasMeter::External { module: _, function: _ } = gas_func {
 						for instruction in func_body.code_mut().elements_mut().iter_mut() {
 							if let Instruction::Call(call_index) = instruction {
-								if *call_index >= gas_func {
+								if *call_index >= gas_func_idx {
 									*call_index += 1
 								}
 							}
@@ -195,10 +241,10 @@ pub fn inject<R: Rules, B: Backend>(
 					}
 				},
 			elements::Section::Export(export_section) =>
-				if let Some(gas_func) = backend.external_gas_func() {
+				if let GasMeter::External { module: _, function: _ } = gas_func {
 					for export in export_section.entries_mut() {
 						if let elements::Internal::Function(func_index) = export.internal_mut() {
-							if *func_index >= gas_func {
+							if *func_index >= gas_func_idx {
 								*func_index += 1
 							}
 						}
@@ -207,11 +253,11 @@ pub fn inject<R: Rules, B: Backend>(
 			elements::Section::Element(elements_section) => {
 				// Note that we do not need to check the element type referenced because in the
 				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				if let Some(gas_func) = backend.external_gas_func() {
+				if let GasMeter::External { module: _, function: _ } = gas_func {
 					for segment in elements_section.entries_mut() {
 						// update all indirect call addresses initial values
 						for func_index in segment.members_mut() {
-							if *func_index >= gas_func {
+							if *func_index >= gas_func_idx {
 								*func_index += 1
 							}
 						}
@@ -219,17 +265,17 @@ pub fn inject<R: Rules, B: Backend>(
 				}
 			},
 			elements::Section::Start(start_idx) =>
-				if let Some(gas_func) = backend.external_gas_func() {
-					if *start_idx >= gas_func {
+				if let GasMeter::External { module: _, function: _ } = gas_func {
+					if *start_idx >= gas_func_idx {
 						*start_idx += 1
 					}
 				},
 			elements::Section::Name(s) =>
-				if let Some(gas_func) = backend.external_gas_func() {
+				if let GasMeter::External { module: _, function: _ } = gas_func {
 					for functions in s.functions_mut() {
 						*functions.names_mut() =
 							IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-								if idx >= gas_func {
+								if idx >= gas_func_idx {
 									idx += 1;
 								}
 
@@ -246,8 +292,8 @@ pub fn inject<R: Rules, B: Backend>(
 	}
 
 	// Add local function if needed
-	if let Some(func) = backend.local_gas_func() {
-		module = add_local_func(module, func);
+	if let GasMeter::Internal { global: _, function } = gas_func {
+		module = add_local_func(module, function);
 	}
 
 	if need_grow_counter {
@@ -661,7 +707,7 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-		let backend = ImportedFunctionInjector::new("env");
+		let backend = ImportedFunctionInjector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
 
@@ -755,7 +801,7 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-		let backend = ImportedFunctionInjector::new("env");
+		let backend = ImportedFunctionInjector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -834,7 +880,7 @@ mod tests {
 			.build()
 			.build();
 
-		let backend = ImportedFunctionInjector::new("env");
+		let backend = ImportedFunctionInjector::new("env", "gas");
 		let injected_module =
 			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
@@ -939,7 +985,7 @@ mod tests {
 			fn $name1() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
-				let backend = ImportedFunctionInjector::new("env");
+				let backend = ImportedFunctionInjector::new("env", "gas");
 				let injected_module =
 					super::inject(input_module, backend, &ConstantCostRules::default())
 						.expect("inject_gas_counter call failed");
