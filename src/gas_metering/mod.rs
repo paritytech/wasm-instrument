@@ -1,4 +1,4 @@
-//! This module is used to instrument a Wasm module with a gas metering code.
+//! This module is used to instrument a Wasm module with the gas metering code.
 //!
 //! The primary public interface is the [`inject`] function which transforms a given
 //! module into one that charges gas for code to be executed. See function documentation for usage
@@ -122,7 +122,7 @@ impl Rules for ConstantCostRules {
 ///
 /// Charging gas at the beginning of each metered block ensures that 1) all instructions
 /// executed are already paid for, 2) instructions that will not be executed are not charged for
-/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is
+/// unless execution traps, and 3) the number of calls to `gas` is minimized. The corollary is
 /// that modules instrumented with this metering code may charge gas for instructions not
 /// executed in the event of a trap.
 ///
@@ -136,6 +136,11 @@ impl Rules for ConstantCostRules {
 /// the addition of an imported functions changes the indices of module-defined functions. If
 /// the module has a `NameSection`, added by calling `parse_names`, the indices will also be
 /// updated.
+///
+/// Syncronizing the amount of gas charged with the execution engine can be done in two ways. The
+/// first way is by calling the imported `gas` host function, see [`host_function`] for details. The
+/// second way is by using a local `gas` function together with a mutable global, see
+/// [`mutable_global`] for details.
 ///
 /// This routine runs in time linear in the size of the input module.
 ///

@@ -3,8 +3,20 @@ use parity_wasm::{builder::FunctionDefinition, elements};
 
 /// Implementation details of the specific method of the gas metering.
 pub enum GasMeter {
-	External { module: &'static str, function: &'static str },
-	Internal { global: &'static str, function: FunctionDefinition },
+	/// Gas metering with an external function.
+	External {
+		/// Name of the module to import the gas function from.
+		module: &'static str,
+		/// Name of the external gas function to be imported.
+		function: &'static str,
+	},
+	/// Gas metering with a local function and a mutable global.
+	Internal {
+		/// Name of the mutable global to be exported.
+		global: &'static str,
+		/// Definition of the local gas counting function to be injected.
+		function: FunctionDefinition,
+	},
 }
 
 /// Under the hood part of the gas metering mechanics.
@@ -13,14 +25,14 @@ pub trait Backend {
 	fn gas_meter(self, module: elements::Module) -> GasMeter;
 }
 
-/// Gas metering with an external function
+/// Gas metering with an external function.
+///
+/// This is slow because calling imported functions is a heavy operation.
+/// For a faster gas metering see [`super::mutable_global`].
 pub mod host_function {
 	use super::{Backend, GasMeter};
 	use parity_wasm::elements::Module;
 	/// Injects invocations of the gas charging host function into each metering block.
-	///
-	/// This gas metering technique is slow because calling imported functions is a heavy operation.
-	/// For a faster gas metering see [`super::mutable_global`].
 	pub struct Injector {
 		/// The name of the module to import the gas function from.
 		module: &'static str,
@@ -41,7 +53,7 @@ pub mod host_function {
 	}
 }
 
-/// Gas metering with a mutable global
+/// Gas metering with a mutable global.
 pub mod mutable_global {
 	use super::{Backend, GasMeter};
 	use parity_wasm::{
