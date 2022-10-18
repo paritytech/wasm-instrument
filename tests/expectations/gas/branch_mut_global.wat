@@ -30,16 +30,15 @@
   (func (;1;) (type 1) (param i64)
     global.get 0
     local.get 0
-    i64.sub
-    local.tee 0
-    i64.const 0
-    i64.lt_s
+    i64.lt_u
     if  ;; label = @1
       i64.const -1
       global.set 0
       unreachable
     else
+      global.get 0
       local.get 0
+      i64.sub
       global.set 0
     end
   )
