@@ -22,7 +22,7 @@ pub enum GasMeter {
 /// Under the hood part of the gas metering mechanics.
 pub trait Backend {
 	/// Provides the gas metering implementation details.  
-	fn gas_meter(self, module: elements::Module) -> GasMeter;
+	fn gas_meter(self, module: &elements::Module) -> GasMeter;
 }
 
 /// Gas metering with an external function.
@@ -47,7 +47,7 @@ pub mod host_function {
 	}
 
 	impl Backend for Injector {
-		fn gas_meter(self, _module: Module) -> GasMeter {
+		fn gas_meter(self, _module: &Module) -> GasMeter {
 			GasMeter::External { module: self.module, function: self.name }
 		}
 	}
@@ -79,7 +79,7 @@ pub mod mutable_global {
 	}
 
 	impl Backend for Injector {
-		fn gas_meter(self, module: Module) -> GasMeter {
+		fn gas_meter(self, module: &Module) -> GasMeter {
 			// Build local gas function
 			let fbuilder = builder::FunctionBuilder::new();
 			let gas_func_sig =

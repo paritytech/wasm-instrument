@@ -147,14 +147,18 @@ impl Rules for ConstantCostRules {
 /// The function fails if the module contains any operation forbidden by gas rule set, returning
 /// the original module as an `Err`.
 pub fn inject<R: Rules, B: Backend>(
-	mut module: elements::Module,
+	module: elements::Module,
 	backend: B,
 	rules: &R,
 ) -> Result<elements::Module, elements::Module> {
 	// Prepare module and return the gas function
-	let gas_func = backend.gas_meter(module.clone());
+	let gas_func = backend.gas_meter(&module);
 
-	let mut mbuilder = builder::from_module(module.clone());
+	let import_count = module.import_count(elements::ImportCountType::Function) as u32;
+	let functions_space = module.functions_space() as u32;
+	let gas_global_idx = module.globals_space() as u32;
+
+	let mut mbuilder = builder::from_module(module);
 
 	// Calcutate the indexes
 	let (gas_func_idx, total_func) = match gas_func {
@@ -171,10 +175,7 @@ pub fn inject<R: Rules, B: Backend>(
 					.build(),
 			);
 
-			(
-				module.import_count(elements::ImportCountType::Function) as u32,
-				module.functions_space() as u32 + 1,
-			)
+			(import_count, functions_space + 1)
 		},
 		GasMeter::Internal { global, function: _ } => {
 			// Inject the gas counting global
@@ -187,20 +188,19 @@ pub fn inject<R: Rules, B: Backend>(
 			);
 			// Inject the export entry for the gas counting global
 			let ebuilder = builder::ExportBuilder::new();
-			let gas_global_idx = (module.globals_space() as u32).saturating_sub(1);
 			let global_export = ebuilder
 				.field(global)
 				.with_internal(elements::Internal::Global(gas_global_idx))
 				.build();
 			mbuilder.push_export(global_export);
 
-			let func_idx = module.functions_space() as u32;
+			let func_idx = functions_space;
 			(func_idx, func_idx + 1)
 		},
 	};
 
 	// Build the module
-	module = mbuilder.build();
+	let mut module = mbuilder.build();
 
 	let mut need_grow_counter = false;
 	let mut error = false;
