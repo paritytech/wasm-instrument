@@ -121,7 +121,7 @@ fn prepare_in_wasmi<P: Prepare + Backend>(
 		.get_export(&mut store, "run")
 		.and_then(Extern::into_func)
 		.unwrap()
-		.typed::<(), core::F32, _>(&mut store)
+		.typed::<(), core::F32>(&mut store)
 		.unwrap();
 
 	(run, store)

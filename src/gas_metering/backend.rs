@@ -56,6 +56,7 @@ pub mod host_function {
 /// Gas metering with a mutable global.
 pub mod mutable_global {
 	use super::{Backend, GasMeter};
+	use alloc::vec;
 	use parity_wasm::{
 		builder,
 		elements::{self, Instruction, Module, ValueType},
