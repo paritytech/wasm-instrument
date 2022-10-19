@@ -39,7 +39,15 @@ mod max_height;
 mod thunk;
 
 pub struct Context {
+	/// Number of functions that the module imports. Required to convert defined functions indicies
+	/// into the global function index space.
+	func_imports: u32,
+	/// For each function in the function space this vector stores the respective type index.
+	func_types: Vec<u32>,
+	/// The index of the global variable that contains the current stack height.
 	stack_height_global_idx: u32,
+	/// Logical stack costs for each function in the function space. Imported functions have cost
+	/// of 0.
 	func_stack_costs: Vec<u32>,
 	stack_limit: u32,
 }
@@ -53,6 +61,11 @@ impl Context {
 	/// Returns `stack_cost` for `func_idx`.
 	fn stack_cost(&self, func_idx: u32) -> Option<u32> {
 		self.func_stack_costs.get(func_idx as usize).cloned()
+	}
+
+	/// Returns a reference to the function type index given by the index into the function space.
+	fn func_type(&self, func_idx: u32) -> Option<u32> {
+		self.func_types.get(func_idx as usize).copied()
 	}
 
 	/// Returns stack limit specified by the rules.
@@ -115,20 +128,106 @@ pub fn inject(
 	mut module: elements::Module,
 	stack_limit: u32,
 ) -> Result<elements::Module, &'static str> {
-	let mut ctx = Context {
-		stack_height_global_idx: generate_stack_height_global(&mut module),
-		func_stack_costs: compute_stack_costs(&module)?,
-		stack_limit,
-	};
+	let mut ctx = prepare_context(&module, stack_limit)?;
 
-	instrument_functions(&mut ctx, &mut module)?;
+	generate_stack_height_global(&mut ctx.stack_height_global_idx, &mut module)?;
+	instrument_functions(&ctx, &mut module)?;
 	let module = thunk::generate_thunks(&mut ctx, module)?;
 
 	Ok(module)
 }
 
+fn prepare_context(module: &elements::Module, stack_limit: u32) -> Result<Context, &'static str> {
+	let mut ctx = Context {
+		func_imports: module.import_count(elements::ImportCountType::Function) as u32,
+		func_types: Vec::new(),
+		stack_height_global_idx: 0,
+		func_stack_costs: Vec::new(),
+		stack_limit,
+	};
+	collect_func_types(&mut ctx, &module)?;
+	compute_stack_costs(&mut ctx, &module)?;
+	Ok(ctx)
+}
+
+fn collect_func_types(ctx: &mut Context, module: &elements::Module) -> Result<(), &'static str> {
+	let types = module.type_section().map(|ts| ts.types()).unwrap_or(&[]);
+	let functions = module.function_section().map(|fs| fs.entries()).unwrap_or(&[]);
+	let imports = module.import_section().map(|is| is.entries()).unwrap_or(&[]);
+
+	let ensure_ty = |sig_idx: u32| -> Result<(), &'static str> {
+		let Type::Function(_) = types
+			.get(sig_idx as usize)
+			.ok_or("The signature as specified by a function isn't defined")?;
+		Ok(())
+	};
+
+	for import in imports {
+		if let elements::External::Function(sig_idx) = import.external() {
+			ensure_ty(*sig_idx)?;
+			ctx.func_types.push(*sig_idx);
+		}
+	}
+	for def_func_idx in functions {
+		ensure_ty(def_func_idx.type_ref())?;
+		ctx.func_types.push(def_func_idx.type_ref());
+	}
+
+	Ok(())
+}
+
+/// Calculate stack costs for all functions in the function space.
+///
+/// The function space consists of the imported functions followed by defined functions.
+/// All imported functions assumed to have the cost of 0.
+fn compute_stack_costs(ctx: &mut Context, module: &elements::Module) -> Result<(), &'static str> {
+	for _ in 0..ctx.func_imports {
+		ctx.func_stack_costs.push(0);
+	}
+	let def_func_n = module.function_section().map(|fs| fs.entries().len()).unwrap_or(0) as u32;
+	for def_func_idx in 0..def_func_n {
+		let cost = compute_stack_cost(def_func_idx, ctx, module)?;
+		ctx.func_stack_costs.push(cost);
+	}
+	Ok(())
+}
+
+/// Computes the stack cost of a given function. The function is specified by its index in the
+/// declared function space.
+///
+/// Stack cost of a given function is the sum of it's locals count (that is,
+/// number of arguments plus number of local variables) and the maximal stack
+/// height.
+fn compute_stack_cost(
+	def_func_idx: u32,
+	ctx: &Context,
+	module: &elements::Module,
+) -> Result<u32, &'static str> {
+	let code_section =
+		module.code_section().ok_or("Due to validation code section should exists")?;
+	let body = &code_section
+		.bodies()
+		.get(def_func_idx as usize)
+		.ok_or("Function body is out of bounds")?;
+
+	let mut locals_count: u32 = 0;
+	for local_group in body.locals() {
+		locals_count =
+			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
+	}
+
+	let max_stack_height = max_height::compute(def_func_idx, ctx, module)?;
+
+	locals_count
+		.checked_add(max_stack_height)
+		.ok_or("Overflow in adding locals_count and max_stack_height")
+}
+
 /// Generate a new global that will be used for tracking current stack height.
-fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
+fn generate_stack_height_global(
+	stack_height_global_idx: &mut u32,
+	module: &mut elements::Module,
+) -> Result<(), &'static str> {
 	let global_entry = builder::global()
 		.value_type()
 		.i32()
@@ -140,71 +239,41 @@ fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
 	for section in module.sections_mut() {
 		if let elements::Section::Global(gs) = section {
 			gs.entries_mut().push(global_entry);
-			return (gs.entries().len() as u32) - 1
+			*stack_height_global_idx = (gs.entries().len() as u32) - 1;
+			return Ok(());
 		}
 	}
 
 	// Existing section not found, create one!
-	module
-		.sections_mut()
-		.push(elements::Section::Global(elements::GlobalSection::with_entries(vec![global_entry])));
-	0
-}
-
-/// Calculate stack costs for all functions.
-///
-/// Returns a vector with a stack cost for each function, including imports.
-fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
-	let func_imports = module.import_count(elements::ImportCountType::Function);
-
-	// TODO: optimize!
-	(0..module.functions_space())
-		.map(|func_idx| {
-			if func_idx < func_imports {
-				// We can't calculate stack_cost of the import functions.
-				Ok(0)
-			} else {
-				compute_stack_cost(func_idx as u32, module)
+	//
+	// It's a bit tricky since the sections have a strict prescribed order.
+	let global_section = elements::GlobalSection::with_entries(vec![global_entry]);
+	let prec_index = module
+		.sections()
+		.iter()
+		.rposition(|section| {
+			use elements::Section::*;
+			match section {
+				Type(_) | Import(_) | Function(_) | Table(_) | Memory(_) => true,
+				_ => false,
 			}
 		})
-		.collect()
+		.ok_or("generate stack height global hasn't found any preceding sections")?;
+	// now `prec_index` points to the last section preceding the `global_section`. It's guaranteed that at least
+	// one of those functions is present. Therefore, the candidate position for the global section is the following
+	// one. However, technically, custom sections could occupy any place between the well-known sections.
+	//
+	// Now, regarding `+1` here. `insert` panics iff `index > len`. `prec_index + 1` can only be equal to `len`.
+	module
+		.sections_mut()
+		.insert(prec_index + 1, elements::Section::Global(global_section));
+	// First entry in the brand new globals section.
+	*stack_height_global_idx = 0;
+
+	Ok(())
 }
 
-/// Stack cost of the given *defined* function is the sum of it's locals count (that is,
-/// number of arguments plus number of local variables) and the maximal stack
-/// height.
-fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
-	// To calculate the cost of a function we need to convert index from
-	// function index space to defined function spaces.
-	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
-	let defined_func_idx = func_idx
-		.checked_sub(func_imports)
-		.ok_or("This should be a index of a defined function")?;
-
-	let code_section =
-		module.code_section().ok_or("Due to validation code section should exists")?;
-	let body = &code_section
-		.bodies()
-		.get(defined_func_idx as usize)
-		.ok_or("Function body is out of bounds")?;
-
-	let mut locals_count: u32 = 0;
-	for local_group in body.locals() {
-		locals_count =
-			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
-	}
-
-	let max_stack_height = max_height::compute(defined_func_idx, module)?;
-
-	locals_count
-		.checked_add(max_stack_height)
-		.ok_or("Overflow in adding locals_count and max_stack_height")
-}
-
-fn instrument_functions(
-	ctx: &mut Context,
-	module: &mut elements::Module,
-) -> Result<(), &'static str> {
+fn instrument_functions(ctx: &Context, module: &mut elements::Module) -> Result<(), &'static str> {
 	for section in module.sections_mut() {
 		if let elements::Section::Code(code_section) = section {
 			for func_body in code_section.bodies_mut() {
@@ -242,7 +311,7 @@ fn instrument_functions(
 ///
 /// drop
 /// ```
-fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(), &'static str> {
+fn instrument_function(ctx: &Context, func: &mut Instructions) -> Result<(), &'static str> {
 	use Instruction::*;
 
 	struct InstrumentCall {
@@ -307,42 +376,6 @@ fn instrument_function(ctx: &mut Context, func: &mut Instructions) -> Result<(),
 	}
 
 	Ok(())
-}
-
-fn resolve_func_type(
-	func_idx: u32,
-	module: &elements::Module,
-) -> Result<&elements::FunctionType, &'static str> {
-	let types = module.type_section().map(|ts| ts.types()).unwrap_or(&[]);
-	let functions = module.function_section().map(|fs| fs.entries()).unwrap_or(&[]);
-
-	let func_imports = module.import_count(elements::ImportCountType::Function);
-	let sig_idx = if func_idx < func_imports as u32 {
-		module
-			.import_section()
-			.expect("function import count is not zero; import section must exists; qed")
-			.entries()
-			.iter()
-			.filter_map(|entry| match entry.external() {
-				elements::External::Function(idx) => Some(*idx),
-				_ => None,
-			})
-			.nth(func_idx as usize)
-			.expect(
-				"func_idx is less than function imports count;
-				nth function import must be `Some`;
-				qed",
-			)
-	} else {
-		functions
-			.get(func_idx as usize - func_imports)
-			.ok_or("Function at the specified index is not defined")?
-			.type_ref()
-	};
-	let Type::Function(ty) = types
-		.get(sig_idx as usize)
-		.ok_or("The signature as specified by a function isn't defined")?;
-	Ok(ty)
 }
 
 #[cfg(test)]

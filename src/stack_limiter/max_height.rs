@@ -1,9 +1,10 @@
-use super::resolve_func_type;
 use alloc::vec::Vec;
 use parity_wasm::elements::{self, BlockType, Type};
 
 #[cfg(feature = "sign_ext")]
 use parity_wasm::elements::SignExtInstruction;
+
+use super::Context;
 
 // The cost in stack items that should be charged per call of a function. This is
 // is a static cost that is added to each function call. This makes sense because even
@@ -122,7 +123,11 @@ impl Stack {
 }
 
 /// This function expects the function to be validated.
-pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+pub fn compute(
+	func_idx: u32,
+	ctx: &Context,
+	module: &elements::Module,
+) -> Result<u32, &'static str> {
 	use parity_wasm::elements::Instruction::*;
 
 	let func_section = module.function_section().ok_or("No function section")?;
@@ -246,8 +251,10 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.pop_values(func_arity)?;
 				stack.mark_unreachable()?;
 			},
-			Call(idx) => {
-				let ty = resolve_func_type(*idx, module)?;
+			Call(fn_idx) => {
+				let ty_idx = ctx.func_type(*fn_idx).ok_or("function idx is not found in the func types list")?;
+				let Type::Function(ty) =
+					type_section.types().get(ty_idx as usize).ok_or("Type not found")?;
 
 				// Pop values for arguments of the function.
 				stack.pop_values(ty.params().len() as u32)?;
@@ -411,7 +418,8 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use super::ACTIVATION_FRAME_COST;
+	use crate::stack_limiter::prepare_context;
 	use parity_wasm::elements;
 
 	fn parse_wat(source: &str) -> elements::Module {
@@ -419,10 +427,15 @@ mod tests {
 			.expect("Failed to deserialize the module")
 	}
 
+	fn test_compute(func_idx: u32, source: &str) -> u32 {
+		let module = parse_wat(source);
+		let ctx = prepare_context(&module, 0).unwrap();
+		ctx.stack_cost(func_idx).unwrap()
+	}
+
 	#[test]
 	fn simple_test() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
 	(func
 		i32.const 1
@@ -433,34 +446,30 @@ mod tests {
 		drop
 	)
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn implicit_and_explicit_return() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
 	(func (result i32)
 		i32.const 0
 		return
 	)
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn dont_count_in_unreachable() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
   (memory 0)
   (func (result i32)
@@ -468,17 +477,15 @@ mod tests {
 	grow_memory
   )
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn yet_another_test() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
   (memory 0)
   (func
@@ -497,17 +504,15 @@ mod tests {
 	i32.const 2
   )
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 2 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn call_indirect() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
 	(table $ptr 1 1 funcref)
 	(elem $ptr (i32.const 0) func 1)
@@ -521,17 +526,15 @@ mod tests {
 		drop
 	)
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn breaks() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
 	(func $main
 		block (result i32)
@@ -543,17 +546,15 @@ mod tests {
 		drop
 	)
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
 	}
 
 	#[test]
 	fn if_else_works() {
-		let module = parse_wat(
-			r#"
+		let module = r#"
 (module
 	(func $main
 		i32.const 7
@@ -569,10 +570,9 @@ mod tests {
 		drop
 	)
 )
-"#,
-		);
+"#;
 
-		let height = compute(0, &module).unwrap();
+		let height = test_compute(0, module);
 		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
 	}
 }
