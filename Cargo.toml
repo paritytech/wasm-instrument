@@ -21,7 +21,7 @@ lto = "fat"
 codegen-units = 1
 
 [dependencies]
-parity-wasm = { version = "0.45", default-features = false }
+parity-wasm = { version = "0.45", features = ["multi_value"] }
 
 [dev-dependencies]
 binaryen = "0.12"
