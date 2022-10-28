@@ -74,7 +74,7 @@ impl Prepare for mutable_global::Injector {
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wasmi::{
 	self,
-	core::{Value, ValueType},
+	core::{Value, ValueType, F32},
 	Caller, Config, Engine, Extern, Func, Instance, Linker, StackLimits, Store,
 };
 
@@ -138,9 +138,15 @@ fn gas_metered_coremark(c: &mut Criterion) {
 	let wasm_filename = "coremark_minimal.wasm";
 	let bytes = read(fixture_dir().join(wasm_filename)).unwrap();
 	let backend = host_function::Injector::new("env", "gas");
-	let (run, mut store) = prepare_in_wasmi(backend, &bytes);
+	let (instance, mut store) = prepare_in_wasmi(backend, &bytes);
 	group.bench_function("with host_function::Injector", |bench| {
 		bench.iter(|| {
+			let run = instance
+				.get_export(&mut store, "run")
+				.and_then(Extern::into_func)
+				.unwrap()
+				.typed::<(), F32>(&mut store)
+				.unwrap();
 			// Call the wasm!
 			run.call(&mut store, ()).unwrap();
 		})
@@ -148,9 +154,15 @@ fn gas_metered_coremark(c: &mut Criterion) {
 
 	// Benchmark mutable_global::Injector
 	let backend = mutable_global::Injector::new("gas_left");
-	let (run, mut store) = prepare_in_wasmi(backend, &bytes);
+	let (instance, mut store) = prepare_in_wasmi(backend, &bytes);
 	group.bench_function("with mutable_global::Injector", |bench| {
 		bench.iter(|| {
+			let run = instance
+				.get_export(&mut store, "run")
+				.and_then(Extern::into_func)
+				.unwrap()
+				.typed::<(), F32>(&mut store)
+				.unwrap();
 			// Call the wasm!
 			run.call(&mut store, ()).unwrap();
 		})
@@ -193,11 +205,11 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 	];
 	let results = &mut [Value::I32(0); 16];
 
+	let backend = host_function::Injector::new("env", "gas");
+	let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
+	let bare_call =
+		instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
 	group.bench_function("with host_function::Injector", |bench| {
-		let backend = host_function::Injector::new("env", "gas");
-		let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
-		let bare_call =
-			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
 		bench.iter(|| {
 			for _ in 0..REPETITIONS {
 				bare_call.call(&mut store, params, results).unwrap();
@@ -205,11 +217,11 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 		})
 	});
 
+	let backend = mutable_global::Injector::new("gas_left");
+	let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
+	let bare_call =
+		instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
 	group.bench_function("with mutable_global::Injector", |bench| {
-		let backend = mutable_global::Injector::new("gas_left");
-		let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
-		let bare_call =
-			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
 		bench.iter(|| {
 			for _ in 0..REPETITIONS {
 				bare_call.call(&mut store, params, results).unwrap();
