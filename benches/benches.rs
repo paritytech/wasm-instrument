@@ -16,6 +16,7 @@ fn fixture_dir() -> PathBuf {
 	let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	path.push("benches");
 	path.push("fixtures");
+	path.push("wasm");
 	path
 }
 
@@ -230,24 +231,63 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 	});
 }
 
+fn wasmi_execute_fibonacci_recursive(c: &mut Criterion) {
+	let mut group = c.benchmark_group("fibonacci_recursive, instrumented");
+	const FIBONACCI_REC_N: i64 = 10;
+	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/fibonacci.wat"));
+
+	let backend = host_function::Injector::new("env", "gas");
+	let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
+	let bench_call = instance
+		.get_export(&store, "fib_recursive")
+		.and_then(Extern::into_func)
+		.unwrap();
+	let mut result = [Value::I32(0)];
+
+	group.bench_function("with host_function::Injector", |bench| {
+		bench.iter(|| {
+			bench_call
+				.call(&mut store, &[Value::I64(FIBONACCI_REC_N)], &mut result)
+				.unwrap();
+		});
+	});
+
+	let backend = mutable_global::Injector::new("gas_left");
+	let (instance, mut store) = prepare_in_wasmi(backend, &wasm_bytes);
+
+	let bench_call = instance
+		.get_export(&store, "fib_recursive")
+		.and_then(Extern::into_func)
+		.unwrap();
+	let mut result = [Value::I32(0)];
+
+	group.bench_function("with mutable_global::Injector", |bench| {
+		bench.iter(|| {
+			bench_call
+				.call(&mut store, &[Value::I64(FIBONACCI_REC_N)], &mut result)
+				.unwrap();
+		});
+	});
+}
+
 criterion_group!(benches, gas_metering, stack_height_limiter);
-// criterion_group!(
-// 	name = contest_backends;
-// 	config = Criterion::default()
-// 		.sample_size(10)
-// 		.measurement_time(Duration::from_millis(250000))
-// 		.warm_up_time(Duration::from_millis(1000));
-// 	targets =
-// 		 gas_metered_coremark,
-// );
+criterion_group!(
+	name = contest_backends;
+	config = Criterion::default()
+		.sample_size(10)
+		.measurement_time(Duration::from_millis(250000))
+		.warm_up_time(Duration::from_millis(1000));
+	targets =
+		 gas_metered_coremark,
+);
 criterion_group!(
 	name = wasmi_execute;
 	config = Criterion::default()
 		.sample_size(10)
-		.measurement_time(Duration::from_millis(250000))
-	.warm_up_time(Duration::from_millis(1000));
+		.measurement_time(Duration::from_millis(250000));
+//	.warm_up_time(Duration::from_millis(1000));
 	targets =
-		 wasmi_execute_bare_call_16,
+//		 wasmi_execute_bare_call_16,
+	wasmi_execute_fibonacci_recursive,
 );
-//criterion_main!(benches, contest_backends);
-criterion_main!(wasmi_execute);
+criterion_main!(benches, contest_backends, wasmi_execute);
