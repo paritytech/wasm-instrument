@@ -268,6 +268,50 @@ fn wasmi_execute_fibonacci_recursive(c: &mut Criterion) {
 	});
 }
 
+fn wasmi_execute_fac_recursive(c: &mut Criterion) {
+	let mut group = c.benchmark_group("factorial_recursive, instrumented");
+	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/factorial.wat"));
+
+	let backend = host_function::Injector::new("env", "gas");
+	let (module, mut store) = prepare_module(backend, &wasm_bytes);
+	// Link the host function with the imported one
+	let mut linker = <Linker<u64>>::new();
+	add_gas_host_func(&mut linker, &mut store);
+	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+
+	group.bench_function("with host_function::Injector", |b| {
+		let fac = instance
+			.get_export(&store, "recursive_factorial")
+			.and_then(Extern::into_func)
+			.unwrap();
+		let mut result = [Value::I64(0)];
+		b.iter(|| {
+			fac.call(&mut store, &[Value::I64(25)], &mut result).unwrap();
+			assert_eq!(result, [Value::I64(7034535277573963776)]);
+		})
+	});
+
+	let backend = mutable_global::Injector::new("gas_left");
+	let (module, mut store) = prepare_module(backend, &wasm_bytes);
+
+	// Add the gas_left mutable global
+	let mut linker = <Linker<u64>>::new();
+	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+	let mut store = add_gas_left_global(&instance, store);
+
+	group.bench_function("with mutable_global::Injector", |b| {
+		let fac = instance
+			.get_export(&store, "recursive_factorial")
+			.and_then(Extern::into_func)
+			.unwrap();
+		let mut result = [Value::I64(0)];
+		b.iter(|| {
+			fac.call(&mut store, &[Value::I64(25)], &mut result).unwrap();
+			assert_eq!(result, [Value::I64(7034535277573963776)]);
+		})
+	});
+}
+
 criterion_group!(benches, gas_metering, stack_height_limiter);
 criterion_group!(
 	name = coremark;
@@ -286,6 +330,7 @@ criterion_group!(
 	.warm_up_time(Duration::from_millis(1000));
 	targets =
 		wasmi_execute_bare_call_16,
-		wasmi_execute_fibonacci_recursive,
+	wasmi_execute_fibonacci_recursive,
+	wasmi_execute_fac_recursive,
 );
-criterion_main!(benches, coremark, wasmi_fixtures);
+criterion_main!(coremark, wasmi_fixtures);
