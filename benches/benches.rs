@@ -98,21 +98,21 @@ fn gas_metered_coremark(c: &mut Criterion) {
 	// Benchmark host_function::Injector
 	let wasm_filename = "coremark_minimal.wasm";
 	let bytes = read(fixture_dir().join(wasm_filename)).unwrap();
-	let backend = host_function::Injector::new("env", "gas");
-	let (module, mut store) = prepare_module(backend, &bytes);
-	// Link the host functions with the imported ones
-	let mut linker = <Linker<u64>>::new();
-	add_gas_host_func(&mut linker, &mut store);
-	// Create clock_ms host function.
-	let host_clock_ms = Func::wrap(&mut store, || {
-		SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-	});
-	// Link the time measurer for the coremark wasm
-	linker.define("env", "clock_ms", host_clock_ms).unwrap();
-
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-
 	group.bench_function("with host_function::Injector", |bench| {
+		let backend = host_function::Injector::new("env", "gas");
+		let (module, mut store) = prepare_module(backend, &bytes);
+		// Link the host functions with the imported ones
+		let mut linker = <Linker<u64>>::new();
+		add_gas_host_func(&mut linker, &mut store);
+		// Create clock_ms host function.
+		let host_clock_ms = Func::wrap(&mut store, || {
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+		});
+		// Link the time measurer for the coremark wasm
+		linker.define("env", "clock_ms", host_clock_ms).unwrap();
+
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+
 		bench.iter(|| {
 			let run = instance
 				.get_export(&mut store, "run")
@@ -125,14 +125,21 @@ fn gas_metered_coremark(c: &mut Criterion) {
 		})
 	});
 
-	// Benchmark mutable_global::Injector
-	let backend = mutable_global::Injector::new("gas_left");
-	let (module, mut store) = prepare_module(backend, &bytes);
-	// Add the gas_left mutable global
-	let mut linker = <Linker<u64>>::new();
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-	let mut store = add_gas_left_global(&instance, store);
 	group.bench_function("with mutable_global::Injector", |bench| {
+		let backend = mutable_global::Injector::new("gas_left");
+		let (module, mut store) = prepare_module(backend, &bytes);
+		// Add the gas_left mutable global
+		let mut linker = <Linker<u64>>::new();
+		// Create clock_ms host function.
+		let host_clock_ms = Func::wrap(&mut store, || {
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+		});
+		// Link the time measurer for the coremark wasm
+		linker.define("env", "clock_ms", host_clock_ms).unwrap();
+
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
+
 		bench.iter(|| {
 			let run = instance
 				.get_export(&mut store, "run")
@@ -158,7 +165,7 @@ fn bench_config() -> Config {
 	config
 }
 
-fn wasmi_execute_bare_call_16(c: &mut Criterion) {
+fn gas_metered_bare_call_16(c: &mut Criterion) {
 	let mut group = c.benchmark_group("bare_call, instrumented");
 	const REPETITIONS: usize = 20_000;
 	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/bare_call.wat"));
@@ -182,17 +189,17 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 	];
 	let results = &mut [Value::I32(0); 16];
 
-	let backend = host_function::Injector::new("env", "gas");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-	// Link the host function with the imported one
-	let mut linker = <Linker<u64>>::new();
-	add_gas_host_func(&mut linker, &mut store);
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-
-	let bare_call =
-		instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
-
 	group.bench_function("with host_function::Injector", |bench| {
+		let backend = host_function::Injector::new("env", "gas");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+		// Link the host function with the imported one
+		let mut linker = <Linker<u64>>::new();
+		add_gas_host_func(&mut linker, &mut store);
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+
+		let bare_call =
+			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
+
 		bench.iter(|| {
 			for _ in 0..REPETITIONS {
 				bare_call.call(&mut store, params, results).unwrap();
@@ -200,17 +207,17 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 		})
 	});
 
-	let backend = mutable_global::Injector::new("gas_left");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-	// Add the gas_left mutable global
-	let mut linker = <Linker<u64>>::new();
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-	let mut store = add_gas_left_global(&instance, store);
-
-	let bare_call =
-		instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
-
 	group.bench_function("with mutable_global::Injector", |bench| {
+		let backend = mutable_global::Injector::new("gas_left");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+		// Add the gas_left mutable global
+		let mut linker = <Linker<u64>>::new();
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
+
+		let bare_call =
+			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
+
 		bench.iter(|| {
 			for _ in 0..REPETITIONS {
 				bare_call.call(&mut store, params, results).unwrap();
@@ -219,25 +226,25 @@ fn wasmi_execute_bare_call_16(c: &mut Criterion) {
 	});
 }
 
-fn wasmi_execute_fibonacci_recursive(c: &mut Criterion) {
+fn gas_metered_fibonacci_recursive(c: &mut Criterion) {
 	let mut group = c.benchmark_group("fibonacci_recursive, instrumented");
 	const FIBONACCI_REC_N: i64 = 10;
 	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/fibonacci.wat"));
 
-	let backend = host_function::Injector::new("env", "gas");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-	// Link the host function with the imported one
-	let mut linker = <Linker<u64>>::new();
-	add_gas_host_func(&mut linker, &mut store);
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-
-	let bench_call = instance
-		.get_export(&store, "fib_recursive")
-		.and_then(Extern::into_func)
-		.unwrap();
-	let mut result = [Value::I32(0)];
-
 	group.bench_function("with host_function::Injector", |bench| {
+		let backend = host_function::Injector::new("env", "gas");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+		// Link the host function with the imported one
+		let mut linker = <Linker<u64>>::new();
+		add_gas_host_func(&mut linker, &mut store);
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+
+		let bench_call = instance
+			.get_export(&store, "fib_recursive")
+			.and_then(Extern::into_func)
+			.unwrap();
+		let mut result = [Value::I32(0)];
+
 		bench.iter(|| {
 			bench_call
 				.call(&mut store, &[Value::I64(FIBONACCI_REC_N)], &mut result)
@@ -245,21 +252,21 @@ fn wasmi_execute_fibonacci_recursive(c: &mut Criterion) {
 		});
 	});
 
-	let backend = mutable_global::Injector::new("gas_left");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-
-	// Add the gas_left mutable global
-	let mut linker = <Linker<u64>>::new();
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-	let mut store = add_gas_left_global(&instance, store);
-
-	let bench_call = instance
-		.get_export(&store, "fib_recursive")
-		.and_then(Extern::into_func)
-		.unwrap();
-	let mut result = [Value::I32(0)];
-
 	group.bench_function("with mutable_global::Injector", |bench| {
+		let backend = mutable_global::Injector::new("gas_left");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+
+		// Add the gas_left mutable global
+		let mut linker = <Linker<u64>>::new();
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
+
+		let bench_call = instance
+			.get_export(&store, "fib_recursive")
+			.and_then(Extern::into_func)
+			.unwrap();
+		let mut result = [Value::I32(0)];
+
 		bench.iter(|| {
 			bench_call
 				.call(&mut store, &[Value::I64(FIBONACCI_REC_N)], &mut result)
@@ -268,43 +275,43 @@ fn wasmi_execute_fibonacci_recursive(c: &mut Criterion) {
 	});
 }
 
-fn wasmi_execute_fac_recursive(c: &mut Criterion) {
+fn gas_metered_fac_recursive(c: &mut Criterion) {
 	let mut group = c.benchmark_group("factorial_recursive, instrumented");
 	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/factorial.wat"));
 
-	let backend = host_function::Injector::new("env", "gas");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-	// Link the host function with the imported one
-	let mut linker = <Linker<u64>>::new();
-	add_gas_host_func(&mut linker, &mut store);
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-
 	group.bench_function("with host_function::Injector", |b| {
+		let backend = host_function::Injector::new("env", "gas");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+		// Link the host function with the imported one
+		let mut linker = <Linker<u64>>::new();
+		add_gas_host_func(&mut linker, &mut store);
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let fac = instance
 			.get_export(&store, "recursive_factorial")
 			.and_then(Extern::into_func)
 			.unwrap();
 		let mut result = [Value::I64(0)];
+
 		b.iter(|| {
 			fac.call(&mut store, &[Value::I64(25)], &mut result).unwrap();
 			assert_eq!(result, [Value::I64(7034535277573963776)]);
 		})
 	});
 
-	let backend = mutable_global::Injector::new("gas_left");
-	let (module, mut store) = prepare_module(backend, &wasm_bytes);
-
-	// Add the gas_left mutable global
-	let mut linker = <Linker<u64>>::new();
-	let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
-	let mut store = add_gas_left_global(&instance, store);
-
 	group.bench_function("with mutable_global::Injector", |b| {
+		let backend = mutable_global::Injector::new("gas_left");
+		let (module, mut store) = prepare_module(backend, &wasm_bytes);
+
+		// Add the gas_left mutable global
+		let mut linker = <Linker<u64>>::new();
+		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
 		let fac = instance
 			.get_export(&store, "recursive_factorial")
 			.and_then(Extern::into_func)
 			.unwrap();
 		let mut result = [Value::I64(0)];
+
 		b.iter(|| {
 			fac.call(&mut store, &[Value::I64(25)], &mut result).unwrap();
 			assert_eq!(result, [Value::I64(7034535277573963776)]);
@@ -329,8 +336,8 @@ criterion_group!(
 		.measurement_time(Duration::from_millis(250000))
 	.warm_up_time(Duration::from_millis(1000));
 	targets =
-		wasmi_execute_bare_call_16,
-	wasmi_execute_fibonacci_recursive,
-	wasmi_execute_fac_recursive,
+		gas_metered_bare_call_16,
+		gas_metered_fibonacci_recursive,
+		gas_metered_fac_recursive,
 );
 criterion_main!(coremark, wasmi_fixtures);
