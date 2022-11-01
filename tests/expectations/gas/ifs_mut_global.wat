@@ -20,6 +20,8 @@
   )
   (func (;1;) (type 1) (param i64)
     global.get 0
+    i64.const 13
+    i64.sub
     local.get 0
     i64.lt_u
     if  ;; label = @1

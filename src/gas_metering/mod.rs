@@ -152,7 +152,7 @@ pub fn inject<R: Rules, B: Backend>(
 	rules: &R,
 ) -> Result<elements::Module, elements::Module> {
 	// Prepare module and return the gas function
-	let gas_func = backend.gas_meter(&module);
+	let gas_func = backend.gas_meter(&module, rules);
 
 	let import_count = module.import_count(elements::ImportCountType::Function) as u32;
 	let functions_space = module.functions_space() as u32;
@@ -746,6 +746,8 @@ mod tests {
 			get_function_body(&injected_module, 1).unwrap(),
 			&vec![
 				Instruction::GetGlobal(1),
+				Instruction::I64Const(13), // gas func overhead cost
+				Instruction::I64Sub,
 				Instruction::GetLocal(0),
 				Instruction::I64LtU,
 				Instruction::If(elements::BlockType::NoResult),

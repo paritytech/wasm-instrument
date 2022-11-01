@@ -19,10 +19,11 @@ pub enum GasMeter {
 	},
 }
 
+use super::Rules;
 /// Under the hood part of the gas metering mechanics.
 pub trait Backend {
 	/// Provides the gas metering implementation details.  
-	fn gas_meter(self, module: &elements::Module) -> GasMeter;
+	fn gas_meter<R: Rules>(self, module: &elements::Module, rules: &R) -> GasMeter;
 }
 
 /// Gas metering with an external function.
@@ -30,7 +31,7 @@ pub trait Backend {
 /// This is slow because calling imported functions is a heavy operation.
 /// For a faster gas metering see [`super::mutable_global`].
 pub mod host_function {
-	use super::{Backend, GasMeter};
+	use super::{Backend, GasMeter, Rules};
 	use parity_wasm::elements::Module;
 	/// Injects invocations of the gas charging host function into each metering block.
 	pub struct Injector {
@@ -47,7 +48,7 @@ pub mod host_function {
 	}
 
 	impl Backend for Injector {
-		fn gas_meter(self, _module: &Module) -> GasMeter {
+		fn gas_meter<R: Rules>(self, _module: &Module, _rules: &R) -> GasMeter {
 			GasMeter::External { module: self.module, function: self.name }
 		}
 	}
@@ -55,7 +56,7 @@ pub mod host_function {
 
 /// Gas metering with a mutable global.
 pub mod mutable_global {
-	use super::{Backend, GasMeter};
+	use super::{Backend, GasMeter, Rules};
 	use alloc::vec;
 	use parity_wasm::{
 		builder,
@@ -80,31 +81,59 @@ pub mod mutable_global {
 	}
 
 	impl Backend for Injector {
-		fn gas_meter(self, module: &Module) -> GasMeter {
+		fn gas_meter<R: Rules>(self, module: &Module, rules: &R) -> GasMeter {
 			// Build local gas function
 			let fbuilder = builder::FunctionBuilder::new();
 			let gas_func_sig =
 				builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
 			let gas_global_idx = module.globals_space() as u32;
+
+			let mut func_instructions = vec![
+				Instruction::GetGlobal(gas_global_idx),
+				// charging for this function execution itself
+				Instruction::I64Const(0), // gas func overhead cost, the value is actualized below
+				Instruction::I64Sub,
+				Instruction::GetLocal(0),
+				Instruction::I64LtU,
+				Instruction::If(elements::BlockType::NoResult),
+				// sentinel val u64::MAX
+				Instruction::I64Const(-1i64),           // non-charged instruction
+				Instruction::SetGlobal(gas_global_idx), // non-charged instruction
+				Instruction::Unreachable,               // non-charged instruction
+				Instruction::Else,
+				Instruction::GetGlobal(gas_global_idx),
+				Instruction::GetLocal(0),
+				Instruction::I64Sub,
+				Instruction::SetGlobal(gas_global_idx),
+				Instruction::End,
+				Instruction::End,
+			];
+
+			// calculate gas used for the gas charging func execution itself
+			let mut gas_fn_cost = func_instructions.iter().fold(0, |cost, instruction| {
+				cost + (rules.instruction_cost(instruction).unwrap_or(0) as i64)
+			});
+
+			// don't charge for the instructions used to fail when out of gas
+			let fail_cost = vec![
+				Instruction::I64Const(-1i64),           // non-charged instruction
+				Instruction::SetGlobal(gas_global_idx), // non-charged instruction
+				Instruction::Unreachable,               // non-charged instruction
+			]
+			.iter()
+			.fold(0, |cost, instruction| {
+				cost + (rules.instruction_cost(instruction).unwrap_or(0) as i64)
+			});
+
+			gas_fn_cost -= fail_cost;
+
+			// update the charged overhead cost
+			func_instructions[1] = Instruction::I64Const(gas_fn_cost);
+
 			let func = fbuilder
 				.with_signature(gas_func_sig)
 				.body()
-				.with_instructions(elements::Instructions::new(vec![
-					Instruction::GetGlobal(gas_global_idx),
-					Instruction::GetLocal(0),
-					Instruction::I64LtU,
-					Instruction::If(elements::BlockType::NoResult),
-					Instruction::I64Const(-1i64), // sentinel val u64::MAX
-					Instruction::SetGlobal(gas_global_idx),
-					Instruction::Unreachable,
-					Instruction::Else,
-					Instruction::GetGlobal(gas_global_idx),
-					Instruction::GetLocal(0),
-					Instruction::I64Sub,
-					Instruction::SetGlobal(gas_global_idx),
-					Instruction::End,
-					Instruction::End,
-				]))
+				.with_instructions(elements::Instructions::new(func_instructions))
 				.build()
 				.build();
 

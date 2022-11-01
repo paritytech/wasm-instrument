@@ -12,6 +12,7 @@ fn fixture_dir() -> PathBuf {
 	let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	path.push("benches");
 	path.push("fixtures");
+	path.push("wasm");
 	path
 }
 

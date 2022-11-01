@@ -15,6 +15,8 @@
   (func (;2;) (type 1))
   (func (;3;) (type 2) (param i64)
     global.get 0
+    i64.const 13
+    i64.sub
     local.get 0
     i64.lt_u
     if  ;; label = @1
