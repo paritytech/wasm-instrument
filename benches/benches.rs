@@ -57,7 +57,7 @@ fn stack_height_limiter(c: &mut Criterion) {
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wasmi::{
 	self,
-	core::{Value, ValueType, F32},
+	core::{Value, F32},
 	Caller, Config, Engine, Extern, Func, Instance, Linker, StackLimits, Store,
 };
 fn prepare_module<P: Backend>(backend: P, input: &[u8]) -> (wasmi::Module, Store<u64>) {
@@ -165,29 +165,10 @@ fn bench_config() -> Config {
 	config
 }
 
-fn gas_metered_bare_call_16(c: &mut Criterion) {
-	let mut group = c.benchmark_group("bare_call, instrumented");
-	const REPETITIONS: usize = 20_000;
-	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/bare_call.wat"));
-	let params = &[
-		Value::default(ValueType::I32),
-		Value::default(ValueType::I64),
-		Value::default(ValueType::F32),
-		Value::default(ValueType::F64),
-		Value::default(ValueType::I32),
-		Value::default(ValueType::I64),
-		Value::default(ValueType::F32),
-		Value::default(ValueType::F64),
-		Value::default(ValueType::I32),
-		Value::default(ValueType::I64),
-		Value::default(ValueType::F32),
-		Value::default(ValueType::F64),
-		Value::default(ValueType::I32),
-		Value::default(ValueType::I64),
-		Value::default(ValueType::F32),
-		Value::default(ValueType::F64),
-	];
-	let results = &mut [Value::I32(0); 16];
+fn gas_metered_recursive_ok(c: &mut Criterion) {
+	let mut group = c.benchmark_group("recursive_ok, instrumented");
+	const RECURSIVE_DEPTH: i32 = 8000;
+	let wasm_bytes = wat2wasm(include_bytes!("fixtures/wat/recursive_ok.wat"));
 
 	group.bench_function("with host_function::Injector", |bench| {
 		let backend = host_function::Injector::new("env", "gas");
@@ -197,13 +178,14 @@ fn gas_metered_bare_call_16(c: &mut Criterion) {
 		add_gas_host_func(&mut linker, &mut store);
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 
-		let bare_call =
-			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
+		let bench_call = instance.get_export(&store, "call").and_then(Extern::into_func).unwrap();
+		let mut result = [Value::I32(0)];
 
 		bench.iter(|| {
-			for _ in 0..REPETITIONS {
-				bare_call.call(&mut store, params, results).unwrap();
-			}
+			bench_call
+				.call(&mut store, &[Value::I32(RECURSIVE_DEPTH)], &mut result)
+				.unwrap();
+			assert_eq!(result, [Value::I32(0)]);
 		})
 	});
 
@@ -215,13 +197,14 @@ fn gas_metered_bare_call_16(c: &mut Criterion) {
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 
-		let bare_call =
-			instance.get_export(&store, "bare_call_16").and_then(Extern::into_func).unwrap();
+		let bench_call = instance.get_export(&store, "call").and_then(Extern::into_func).unwrap();
+		let mut result = [Value::I32(0)];
 
 		bench.iter(|| {
-			for _ in 0..REPETITIONS {
-				bare_call.call(&mut store, params, results).unwrap();
-			}
+			bench_call
+				.call(&mut store, &[Value::I32(RECURSIVE_DEPTH)], &mut result)
+				.unwrap();
+			assert_eq!(result, [Value::I32(0)]);
 		})
 	});
 }
@@ -336,7 +319,7 @@ criterion_group!(
 		.measurement_time(Duration::from_millis(250000))
 	.warm_up_time(Duration::from_millis(1000));
 	targets =
-		gas_metered_bare_call_16,
+		gas_metered_recursive_ok,
 		gas_metered_fibonacci_recursive,
 		gas_metered_fac_recursive,
 );
