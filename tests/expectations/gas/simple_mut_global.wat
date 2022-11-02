@@ -23,21 +23,24 @@
     end
   )
   (func (;2;) (type 1) (param i64)
+    (local i64)
     global.get 0
     i64.const 13
     i64.sub
+    local.tee 1
     local.get 0
-    i64.lt_u
+    i64.ge_u
     if  ;; label = @1
-      i64.const -1
-      global.set 0
-      unreachable
-    else
-      global.get 0
+      local.get 1
       local.get 0
       i64.sub
       global.set 0
+      return
     end
+    i64.const -1
+    global.set 0
+    global.set 0
+    unreachable
   )
   (global (;0;) (mut i64) i64.const 0)
   (export "simple" (func 0))

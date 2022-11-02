@@ -93,19 +93,20 @@ pub mod mutable_global {
 				// charging for this function execution itself
 				Instruction::I64Const(0), // gas func overhead cost, the value is actualized below
 				Instruction::I64Sub,
+				Instruction::TeeLocal(1),
 				Instruction::GetLocal(0),
-				Instruction::I64LtU,
+				Instruction::I64GeU,
 				Instruction::If(elements::BlockType::NoResult),
+				Instruction::GetLocal(1),
+				Instruction::GetLocal(0),
+				Instruction::I64Sub,
+				Instruction::SetGlobal(gas_global_idx),
+				Instruction::Return,
+				Instruction::End,
 				// sentinel val u64::MAX
 				Instruction::I64Const(-1i64),           // non-charged instruction
 				Instruction::SetGlobal(gas_global_idx), // non-charged instruction
 				Instruction::Unreachable,               // non-charged instruction
-				Instruction::Else,
-				Instruction::GetGlobal(gas_global_idx),
-				Instruction::GetLocal(0),
-				Instruction::I64Sub,
-				Instruction::SetGlobal(gas_global_idx),
-				Instruction::End,
 				Instruction::End,
 			];
 
@@ -133,6 +134,7 @@ pub mod mutable_global {
 			let func = fbuilder
 				.with_signature(gas_func_sig)
 				.body()
+				.with_locals([elements::Local::new(1, ValueType::I64)])
 				.with_instructions(elements::Instructions::new(func_instructions))
 				.build()
 				.build();

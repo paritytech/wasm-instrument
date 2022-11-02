@@ -746,20 +746,23 @@ mod tests {
 			get_function_body(&injected_module, 1).unwrap(),
 			&vec![
 				Instruction::GetGlobal(1),
-				Instruction::I64Const(13), // gas func overhead cost
+				// charging for this function execution itself
+				Instruction::I64Const(14), // gas func overhead cost
 				Instruction::I64Sub,
+				Instruction::TeeLocal(1),
 				Instruction::GetLocal(0),
-				Instruction::I64LtU,
+				Instruction::I64GeU,
 				Instruction::If(elements::BlockType::NoResult),
-				Instruction::I64Const(-1i64), // sentinel val u64::MAX
-				Instruction::SetGlobal(1),
-				Instruction::Unreachable,
-				Instruction::Else,
-				Instruction::GetGlobal(1),
+				Instruction::GetLocal(1),
 				Instruction::GetLocal(0),
 				Instruction::I64Sub,
 				Instruction::SetGlobal(1),
+				Instruction::Return,
 				Instruction::End,
+				// sentinel val u64::MAX
+				Instruction::I64Const(-1i64), // non-charged instruction
+				Instruction::SetGlobal(1),    // non-charged instruction
+				Instruction::Unreachable,     // non-charged instruction
 				Instruction::End,
 			][..]
 		);
