@@ -6,7 +6,7 @@
     i64.const 2
     call 0
     i32.const 1
-    if (result i32)  ;; label = @1
+    if (result i32) ;; label = @1
       i64.const 3
       call 0
       local.get 0

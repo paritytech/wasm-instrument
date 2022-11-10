@@ -6,10 +6,10 @@
     i64.const 2
     call 0
     i32.const 1
-    if  ;; label = @1
+    if ;; label = @1
       i64.const 1
       call 0
-      loop  ;; label = @2
+      loop ;; label = @2
         i64.const 2
         call 0
         i32.const 123
@@ -20,7 +20,7 @@
   (func (;2;) (type 0)
     i64.const 1
     call 0
-    block  ;; label = @1
+    block ;; label = @1
     end
   )
   (export "simple" (func 1))

@@ -6,7 +6,7 @@
     (local i32 i32)
     i64.const 13
     call 0
-    block  ;; label = @1
+    block ;; label = @1
       i32.const 0
       local.set 0
       i32.const 1
