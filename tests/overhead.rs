@@ -1,5 +1,5 @@
 use std::{
-	fs::{read, read_dir},
+	fs::{read, read_dir, ReadDir},
 	path::PathBuf,
 };
 use wasm_instrument::{
@@ -12,7 +12,6 @@ fn fixture_dir() -> PathBuf {
 	let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	path.push("benches");
 	path.push("fixtures");
-	path.push("wasm");
 	path
 }
 
@@ -31,69 +30,101 @@ fn stack_limited_mod_len(module: Module) -> (Module, usize) {
 	(module, len)
 }
 
-fn size_overheads_all() {
-	let mut results: Vec<_> = read_dir(fixture_dir())
-		.unwrap()
+struct InstrumentedWasmResults {
+	filename: String,
+	original_module_len: usize,
+	stack_limited_len: usize,
+	gas_metered_host_fn_len: usize,
+	gas_metered_mut_glob_len: usize,
+	gas_metered_host_fn_then_stack_limited_len: usize,
+	gas_metered_mut_glob_then_stack_limited_len: usize,
+}
+
+fn size_overheads_all(files: ReadDir) -> Vec<InstrumentedWasmResults> {
+	files
 		.map(|entry| {
 			let entry = entry.unwrap();
-			let (orig_len, orig_module) = {
-				let bytes = read(&entry.path()).unwrap();
+			let filename = entry.file_name().into_string().unwrap();
+
+			let (original_module_len, orig_module) = {
+				let bytes = match entry.path().extension().unwrap().to_str() {
+					Some("wasm") => read(&entry.path()).unwrap(),
+					Some("wat") =>
+						wat::parse_bytes(&read(&entry.path()).unwrap()).unwrap().into_owned(),
+					_ => panic!("expected fixture_dir containing .wasm or .wat files only"),
+				};
+
 				let len = bytes.len();
 				let module: Module = deserialize_buffer(&bytes).unwrap();
 				(len, module)
 			};
 
-			let (gm_host_fn_module, gm_host_fn_len) = gas_metered_mod_len(
+			let (gm_host_fn_module, gas_metered_host_fn_len) = gas_metered_mod_len(
 				orig_module.clone(),
 				host_function::Injector::new("env", "gas"),
 			);
 
-			let (gm_mut_global_module, gm_mut_global_len) =
+			let (gm_mut_global_module, gas_metered_mut_glob_len) =
 				gas_metered_mod_len(orig_module.clone(), mutable_global::Injector::new("gas_left"));
 
 			let stack_limited_len = stack_limited_mod_len(orig_module).1;
 
-			let (_gm_hf_sl_mod, gm_hf_sl_len) = stack_limited_mod_len(gm_host_fn_module.clone());
+			let (_gm_hf_sl_mod, gas_metered_host_fn_then_stack_limited_len) =
+				stack_limited_mod_len(gm_host_fn_module.clone());
 
-			let (_gm_mg_sl_module, gm_mg_sl_len) =
+			let (_gm_mg_sl_module, gas_metered_mut_glob_then_stack_limited_len) =
 				stack_limited_mod_len(gm_mut_global_module.clone());
 
-			let overhead_host_fn = gm_hf_sl_len * 100 / orig_len;
-			let overhead_mut_global = gm_mg_sl_len * 100 / orig_len;
-
-			let fname = entry.file_name();
-
-			(
-				overhead_mut_global,
-				format!(
-					"{:30}: orig = {:4} kb, stack_limiter = {} %, gas_metered_host_fn =    {} %, both = {} %,\n \
-					 {:69} gas_metered_mut_global = {} %, both = {} %",
-					fname.to_str().unwrap(),
-					orig_len / 1024,
-					stack_limited_len * 100 / orig_len,
-					gm_host_fn_len * 100 / orig_len,
-					overhead_host_fn,
-					"",
-					gm_mut_global_len * 100 / orig_len,
-					overhead_mut_global,
-				),
-				wasmprinter::print_bytes(&gm_host_fn_module.into_bytes().unwrap())
-					.expect("Failed to convert result wasm to wat"),
-				format!("{}", fname.to_str().unwrap()),
-			)
+			InstrumentedWasmResults {
+				filename,
+				original_module_len,
+				stack_limited_len,
+				gas_metered_host_fn_len,
+				gas_metered_mut_glob_len,
+				gas_metered_host_fn_then_stack_limited_len,
+				gas_metered_mut_glob_then_stack_limited_len,
+			}
 		})
-		.collect();
-	results.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-	for entry in results {
-		println!("{}", entry.1);
-	}
+		.collect()
 }
 
-/// Print the overhead of applying gas metering with host_function::Injector, stack
+/// Print the overhead of applying gas metering, stack
 /// height limiting or both.
 ///
 /// Use `cargo test print_size_overhead -- --nocapture`.
 #[test]
 fn print_size_overhead() {
-	size_overheads_all();
+	let mut wasm_path = fixture_dir();
+	wasm_path.push("wasm");
+
+	let mut wat_path = fixture_dir();
+	wat_path.push("wat");
+
+	let mut results = size_overheads_all(read_dir(wasm_path).unwrap());
+	let results_wat = size_overheads_all(read_dir(wat_path).unwrap());
+
+	results.extend(results_wat);
+	results.sort_unstable_by(|a, b| {
+		b.gas_metered_mut_glob_then_stack_limited_len
+			.cmp(&a.gas_metered_mut_glob_then_stack_limited_len)
+	});
+
+	for r in results {
+		let o_filename = r.filename;
+		let o_original_size = r.original_module_len / 1024;
+		let o_stack_limit = r.stack_limited_len * 100 / r.original_module_len;
+		let o_host_fn = r.gas_metered_host_fn_len * 100 / r.original_module_len;
+		let o_mut_glob = r.gas_metered_mut_glob_len * 100 / r.original_module_len;
+		let o_host_fn_sl =
+			r.gas_metered_host_fn_then_stack_limited_len * 100 / r.original_module_len;
+		let o_mut_glob_sl =
+			r.gas_metered_mut_glob_then_stack_limited_len * 100 / r.original_module_len;
+
+		println!(
+			"{o_filename:30}: orig = {o_original_size:4} kb, stack_limiter = {o_stack_limit} %, \
+			  gas_metered_host_fn =    {o_host_fn} %, both = {o_host_fn_sl} %,\n \
+			 {:69} gas_metered_mut_global = {o_mut_glob} %, both = {o_mut_glob_sl} %",
+			""
+		);
+	}
 }
