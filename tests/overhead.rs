@@ -16,7 +16,22 @@ fn fixture_dir() -> PathBuf {
 	path
 }
 
-fn overheads() {
+use gas_metering::Backend;
+fn gas_metered_mod_len<B: Backend>(orig_module: Module, backend: B) -> (Module, usize) {
+	let module = gas_metering::inject(orig_module, backend, &ConstantCostRules::default()).unwrap();
+	let bytes = serialize(module.clone()).unwrap();
+	let len = bytes.len();
+	(module, len)
+}
+
+fn stack_limited_mod_len(module: Module) -> (Module, usize) {
+	let module = inject_stack_limiter(module, 128).unwrap();
+	let bytes = serialize(module.clone()).unwrap();
+	let len = bytes.len();
+	(module, len)
+}
+
+fn size_overheads_all() {
 	let mut results: Vec<_> = read_dir(fixture_dir())
 		.unwrap()
 		.map(|entry| {
@@ -27,62 +42,44 @@ fn overheads() {
 				let module: Module = deserialize_buffer(&bytes).unwrap();
 				(len, module)
 			};
-			let (gas_metered_host_fn_len, gas_metered_host_fn_module) = {
-				let module = gas_metering::inject(
-					orig_module.clone(),
-					host_function::Injector::new("env", "gas"),
-					&ConstantCostRules::default(),
-				)
-				.unwrap();
-				let bytes = serialize(module.clone()).unwrap();
-				let len = bytes.len();
-				(len, module)
-			};
-			let (gas_metered_mut_global_len, gas_metered_mut_global_module) = {
-				let module = gas_metering::inject(
-					orig_module.clone(),
-					mutable_global::Injector::new("gas_left"),
-					&ConstantCostRules::default(),
-				)
-				.unwrap();
-				let bytes = serialize(module.clone()).unwrap();
-				let len = bytes.len();
-				(len, module)
-			};
-			let stack_height_len = {
-				let module = inject_stack_limiter(orig_module, 128).unwrap();
-				let bytes = serialize(module).unwrap();
-				bytes.len()
-			};
-			let gas_metered_host_fn_both_len = {
-				let module = inject_stack_limiter(gas_metered_host_fn_module, 128).unwrap();
-				let bytes = serialize(module).unwrap();
-				bytes.len()
-			};
 
-			let gas_metered_mut_global_both_len = {
-				let module = inject_stack_limiter(gas_metered_mut_global_module, 128).unwrap();
-				let bytes = serialize(module).unwrap();
-				bytes.len()
-			};
+			let (gm_host_fn_module, gm_host_fn_len) = gas_metered_mod_len(
+				orig_module.clone(),
+				host_function::Injector::new("env", "gas"),
+			);
 
-			let overhead_host_fn = gas_metered_host_fn_both_len * 100 / orig_len;
-			let overhead_mut_global = gas_metered_mut_global_both_len * 100 / orig_len;
+			let (gm_mut_global_module, gm_mut_global_len) =
+				gas_metered_mod_len(orig_module.clone(), mutable_global::Injector::new("gas_left"));
+
+			let stack_limited_len = stack_limited_mod_len(orig_module).1;
+
+			let (_gm_hf_sl_mod, gm_hf_sl_len) = stack_limited_mod_len(gm_host_fn_module.clone());
+
+			let (_gm_mg_sl_module, gm_mg_sl_len) =
+				stack_limited_mod_len(gm_mut_global_module.clone());
+
+			let overhead_host_fn = gm_hf_sl_len * 100 / orig_len;
+			let overhead_mut_global = gm_mg_sl_len * 100 / orig_len;
+
+			let fname = entry.file_name();
 
 			(
-			    overhead_mut_global,
+				overhead_mut_global,
 				format!(
 					"{:30}: orig = {:4} kb, stack_limiter = {} %, gas_metered_host_fn =    {} %, both = {} %,\n \
 					 {:69} gas_metered_mut_global = {} %, both = {} %",
-					entry.file_name().to_str().unwrap(),
+					fname.to_str().unwrap(),
 					orig_len / 1024,
-					stack_height_len * 100 / orig_len,
-					gas_metered_host_fn_len * 100 / orig_len,
-				    overhead_host_fn,
-				    "",
-					gas_metered_mut_global_len * 100 / orig_len,
+					stack_limited_len * 100 / orig_len,
+					gm_host_fn_len * 100 / orig_len,
+					overhead_host_fn,
+					"",
+					gm_mut_global_len * 100 / orig_len,
 					overhead_mut_global,
 				),
+				wasmprinter::print_bytes(&gm_host_fn_module.into_bytes().unwrap())
+					.expect("Failed to convert result wasm to wat"),
+				format!("{}", fname.to_str().unwrap()),
 			)
 		})
 		.collect();
@@ -98,11 +95,5 @@ fn overheads() {
 /// Use `cargo test print_size_overhead -- --nocapture`.
 #[test]
 fn print_size_overhead() {
-	//    let mut_global_backend = mutable_global::Injector::new("gas_left");
-
-	overheads();
-	// overheads_for_backend::<wasm_instrument::gas_metering::host_function::Injector,
-	// Clone>(host_fn_backend);
-	// overheads_for_backend::<wasm_instrument::gas_metering::mutable_global::Injector,
-	// Clone>(mut_global_backend);
+	size_overheads_all();
 }
