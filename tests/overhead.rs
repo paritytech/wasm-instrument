@@ -88,12 +88,7 @@ fn size_overheads_all(files: ReadDir) -> Vec<InstrumentedWasmResults> {
 		.collect()
 }
 
-/// Print the overhead of applying gas metering, stack
-/// height limiting or both.
-///
-/// Use `cargo test print_size_overhead -- --nocapture`.
-#[test]
-fn print_size_overhead() {
+fn calc_size_overheads() -> Vec<InstrumentedWasmResults> {
 	let mut wasm_path = fixture_dir();
 	wasm_path.push("wasm");
 
@@ -104,27 +99,73 @@ fn print_size_overhead() {
 	let results_wat = size_overheads_all(read_dir(wat_path).unwrap());
 
 	results.extend(results_wat);
+
+	results
+}
+
+/// Print the overhead of applying gas metering, stack
+/// height limiting or both.
+///
+/// Use `cargo test print_size_overhead -- --nocapture`.
+#[test]
+fn print_size_overhead() {
+	let mut results = calc_size_overheads();
 	results.sort_unstable_by(|a, b| {
 		b.gas_metered_mut_glob_then_stack_limited_len
 			.cmp(&a.gas_metered_mut_glob_then_stack_limited_len)
 	});
 
 	for r in results {
-		let o_filename = r.filename;
-		let o_original_size = r.original_module_len / 1024;
-		let o_stack_limit = r.stack_limited_len * 100 / r.original_module_len;
-		let o_host_fn = r.gas_metered_host_fn_len * 100 / r.original_module_len;
-		let o_mut_glob = r.gas_metered_mut_glob_len * 100 / r.original_module_len;
-		let o_host_fn_sl =
-			r.gas_metered_host_fn_then_stack_limited_len * 100 / r.original_module_len;
-		let o_mut_glob_sl =
+		let filename = r.filename;
+		let original_size = r.original_module_len / 1024;
+		let stack_limit = r.stack_limited_len * 100 / r.original_module_len;
+		let host_fn = r.gas_metered_host_fn_len * 100 / r.original_module_len;
+		let mut_glob = r.gas_metered_mut_glob_len * 100 / r.original_module_len;
+		let host_fn_sl = r.gas_metered_host_fn_then_stack_limited_len * 100 / r.original_module_len;
+		let mut_glob_sl =
 			r.gas_metered_mut_glob_then_stack_limited_len * 100 / r.original_module_len;
 
 		println!(
-			"{o_filename:30}: orig = {o_original_size:4} kb, stack_limiter = {o_stack_limit} %, \
-			  gas_metered_host_fn =    {o_host_fn} %, both = {o_host_fn_sl} %,\n \
-			 {:69} gas_metered_mut_global = {o_mut_glob} %, both = {o_mut_glob_sl} %",
+			"{filename:30}: orig = {original_size:4} kb, stack_limiter = {stack_limit} %, \
+			  gas_metered_host_fn =    {host_fn} %, both = {host_fn_sl} %,\n \
+			 {:69} gas_metered_mut_global = {mut_glob} %, both = {mut_glob_sl} %",
 			""
+		);
+	}
+}
+
+/// Compare module size overhead of applying gas metering with two methods.
+///
+/// Use `cargo test print_gas_metered_sizes -- --nocapture`.
+#[test]
+fn print_gas_metered_sizes() {
+	let overheads = calc_size_overheads();
+	let mut results = overheads
+		.iter()
+		.map(|r| {
+			let diff = (r.gas_metered_mut_glob_len * 100 / r.gas_metered_host_fn_len) as i32 - 100;
+			(diff, r)
+		})
+		.collect::<Vec<(i32, &InstrumentedWasmResults)>>();
+	results.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+	println!(
+		"| {:28} | {:^16} | gas metered/host fn | gas metered/mut global | size diff |",
+		"fixture", "original size",
+	);
+	println!("|{:-^30}|{:-^18}|{:-^21}|{:-^24}|{:-^11}|", "", "", "", "", "",);
+	for r in results {
+		let filename = &r.1.filename;
+		let original_size = &r.1.original_module_len / 1024;
+		let host_fn = &r.1.gas_metered_host_fn_len / 1024;
+		let mut_glob = &r.1.gas_metered_mut_glob_len / 1024;
+		let host_fn_percent = &r.1.gas_metered_host_fn_len * 100 / &r.1.original_module_len;
+		let mut_glob_percent = &r.1.gas_metered_mut_glob_len * 100 / &r.1.original_module_len;
+		let host_fn = format!("{host_fn} kb ({host_fn_percent:}%)");
+		let mut_glob = format!("{mut_glob} kb ({mut_glob_percent:}%)");
+		let diff = &r.0;
+		println!(
+			"| {filename:28} | {original_size:13} kb | {host_fn:>19} | {mut_glob:>22} | {diff:+8}% |"
 		);
 	}
 }
