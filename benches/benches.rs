@@ -89,13 +89,13 @@ fn add_gas_left_global(instance: &Instance, mut store: Store<u64>) -> Store<u64>
 		.get_export(&mut store, "gas_left")
 		.and_then(Extern::into_global)
 		.unwrap()
-		.set(&mut store, Value::I64(i64::MAX))
+		.set(&mut store, Value::I64(-1i64)) // the same as u64::MAX
 		.unwrap();
 	store
 }
 
 fn gas_metered_coremark(c: &mut Criterion) {
-	let mut group = c.benchmark_group("Coremark, instrumented");
+	let mut group = c.benchmark_group("coremark, instrumented");
 	// Benchmark host_function::Injector
 	let wasm_filename = "coremark_minimal.wasm";
 	let bytes = read(fixture_dir().join(wasm_filename)).unwrap();
@@ -442,6 +442,7 @@ fn gas_metered_vec_add(c: &mut Criterion) {
 		// Add the gas_left mutable global
 		let mut linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
 		let vec_add = instance.get_export(&store, "vec_add").and_then(Extern::into_func).unwrap();
 		let mem = instance.get_export(&store, "mem").and_then(Extern::into_memory).unwrap();
 		mem.grow(&mut store, memory_units::Pages(25)).unwrap();
@@ -490,6 +491,7 @@ fn gas_metered_tiny_keccak(c: &mut Criterion) {
 		// Add the gas_left mutable global
 		let mut linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+		let mut store = add_gas_left_global(&instance, store);
 		let prepare = instance
 			.get_export(&store, "prepare_tiny_keccak")
 			.and_then(Extern::into_func)

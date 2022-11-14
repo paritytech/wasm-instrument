@@ -16,6 +16,8 @@ pub enum GasMeter {
 		global: &'static str,
 		/// Definition of the local gas counting function to be injected.
 		function: FunctionDefinition,
+		/// Cost of the gas function execution.
+		cost: u64,
 		/// Instructions to be inlined before gas function invocation for better performance.
 		preamble: Vec<elements::Instruction>,
 		/// Instructions to be inlined after gas function invocation for better performance.
@@ -91,13 +93,13 @@ pub mod mutable_global {
 			let gas_func_sig = builder::SignatureBuilder::new()
 				.with_param(ValueType::I64)
 				.with_param(ValueType::I64)
-				.with_result(ValueType::I64)
+				.with_result(ValueType::I64) // return new gas_left value
 				.build_sig();
 			let gas_global_idx = module.globals_space() as u32;
 
 			let func_instructions = vec![
-				Instruction::GetLocal(0),
-				Instruction::GetLocal(1),
+				Instruction::GetLocal(0), // current val of gas_left global
+				Instruction::GetLocal(1), // block cost to decrement
 				Instruction::I64GeU,
 				Instruction::If(elements::BlockType::NoResult),
 				Instruction::GetLocal(0),
@@ -113,12 +115,7 @@ pub mod mutable_global {
 			];
 
 			// these instructions are inlined for better performance
-			let mut preamble_instructions = vec![
-				Instruction::GetGlobal(gas_global_idx),
-				// charging for this function execution itself
-				Instruction::I64Const(0), // gas func overhead cost, the value is actualized below
-				Instruction::I64Sub,
-			];
+			let preamble_instructions = vec![Instruction::GetGlobal(gas_global_idx)];
 			let postamble_instructions = vec![Instruction::SetGlobal(gas_global_idx)];
 			// calculate gas used for the gas charging func execution itself
 			let mut gas_fn_cost = func_instructions
@@ -126,7 +123,7 @@ pub mod mutable_global {
 				.chain(preamble_instructions.iter())
 				.chain(postamble_instructions.iter())
 				.fold(0, |cost, instruction| {
-					cost + (rules.instruction_cost(instruction).unwrap_or(0) as i64)
+					cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
 				});
 
 			// don't charge for the instructions used to fail when out of gas
@@ -137,13 +134,10 @@ pub mod mutable_global {
 			]
 			.iter()
 			.fold(0, |cost, instruction| {
-				cost + (rules.instruction_cost(instruction).unwrap_or(0) as i64)
+				cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
 			});
 
 			gas_fn_cost -= fail_cost;
-
-			// update the charged overhead cost
-			preamble_instructions[1] = Instruction::I64Const(gas_fn_cost);
 
 			let func = fbuilder
 				.with_signature(gas_func_sig)
@@ -156,6 +150,7 @@ pub mod mutable_global {
 			GasMeter::Internal {
 				global: self.global_name,
 				function: func,
+				cost: gas_fn_cost,
 				preamble: preamble_instructions,
 				postamble: postamble_instructions,
 			}
