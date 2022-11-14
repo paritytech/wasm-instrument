@@ -177,7 +177,7 @@ pub fn inject<R: Rules, B: Backend>(
 
 			(import_count, functions_space + 1)
 		},
-		GasMeter::Internal { global, function: _, preamble: _ } => {
+		GasMeter::Internal { global, function: _, preamble: _, postamble: _ } => {
 			// Inject the gas counting global
 			mbuilder.push_global(
 				builder::global()
@@ -206,8 +206,11 @@ pub fn inject<R: Rules, B: Backend>(
 	let mut error = false;
 
 	let mut preamble = &vec![];
-	if let GasMeter::Internal { global: _, function: _, preamble: p } = &gas_func {
-		preamble = &*p;
+	let mut postamble = &vec![];
+	if let GasMeter::Internal { global: _, function: _, preamble: pre, postamble: post } = &gas_func
+	{
+		preamble = &*pre;
+		postamble = &*post;
 	};
 
 	// Iterate over module sections and perform needed transformations
@@ -225,7 +228,14 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					if inject_counter(func_body.code_mut(), &preamble, rules, gas_func_idx).is_err()
+					if inject_counter(
+						func_body.code_mut(),
+						&preamble,
+						&postamble,
+						rules,
+						gas_func_idx,
+					)
+					.is_err()
 					{
 						error = true;
 						break
@@ -289,7 +299,7 @@ pub fn inject<R: Rules, B: Backend>(
 	}
 
 	// Add local function if needed
-	if let GasMeter::Internal { global: _, function, preamble: _ } = gas_func {
+	if let GasMeter::Internal { global: _, function, preamble: _, postamble: _ } = gas_func {
 		module = add_local_func(module, function);
 	}
 
@@ -626,17 +636,25 @@ fn determine_metered_blocks<R: Rules>(
 fn inject_counter<R: Rules>(
 	instructions: &mut elements::Instructions,
 	preamble_instructions: &Vec<elements::Instruction>,
+	postamble_instructions: &Vec<elements::Instruction>,
 	rules: &R,
 	gas_func: u32,
 ) -> Result<(), ()> {
 	let blocks = determine_metered_blocks(instructions, rules)?;
-	insert_metering_calls(instructions, preamble_instructions, blocks, gas_func)
+	insert_metering_calls(
+		instructions,
+		preamble_instructions,
+		postamble_instructions,
+		blocks,
+		gas_func,
+	)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
 fn insert_metering_calls(
 	instructions: &mut elements::Instructions,
 	preamble_instructions: &Vec<elements::Instruction>,
+	postamble_instructions: &Vec<elements::Instruction>,
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
@@ -656,9 +674,12 @@ fn insert_metering_calls(
 			if block.start_pos == original_pos {
 				for i in preamble_instructions {
 					new_instrs.push(i.clone());
-				}
+				} // instead, add it to the block.cost here VVV
 				new_instrs.push(I64Const(block.cost as i64));
 				new_instrs.push(Call(gas_func));
+				for i in postamble_instructions {
+					new_instrs.push(i.clone());
+				}
 				true
 			} else {
 				false
