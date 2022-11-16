@@ -18,10 +18,6 @@ pub enum GasMeter {
 		function: FunctionDefinition,
 		/// Cost of the gas function execution.
 		cost: u64,
-		/// Instructions to be inlined before gas function invocation for better performance.
-		preamble: Vec<elements::Instruction>,
-		/// Instructions to be inlined after gas function invocation for better performance.
-		postamble: Vec<elements::Instruction>,
 	},
 }
 
@@ -90,21 +86,19 @@ pub mod mutable_global {
 		fn gas_meter<R: Rules>(self, module: &Module, rules: &R) -> GasMeter {
 			// Build local gas function
 			let fbuilder = builder::FunctionBuilder::new();
-			let gas_func_sig = builder::SignatureBuilder::new()
-				.with_param(ValueType::I64)
-				.with_param(ValueType::I64)
-				.with_result(ValueType::I64) // return new gas_left value
-				.build_sig();
+			let gas_func_sig =
+				builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
 			let gas_global_idx = module.globals_space() as u32;
 
 			let func_instructions = vec![
-				Instruction::GetLocal(0), // current val of gas_left global
-				Instruction::GetLocal(1), // block cost to decrement
+				Instruction::GetGlobal(gas_global_idx),
+				Instruction::GetLocal(0),
 				Instruction::I64GeU,
 				Instruction::If(elements::BlockType::NoResult),
+				Instruction::GetGlobal(gas_global_idx),
 				Instruction::GetLocal(0),
-				Instruction::GetLocal(1),
 				Instruction::I64Sub,
+				Instruction::SetGlobal(gas_global_idx),
 				Instruction::Return,
 				Instruction::End,
 				// sentinel val u64::MAX
@@ -114,18 +108,10 @@ pub mod mutable_global {
 				Instruction::End,
 			];
 
-			// these instructions are inlined for better performance
-			let preamble_instructions = vec![Instruction::GetGlobal(gas_global_idx)];
-			let postamble_instructions = vec![Instruction::SetGlobal(gas_global_idx)];
 			// calculate gas used for the gas charging func execution itself
-			let mut gas_fn_cost = func_instructions
-				.iter()
-				.chain(preamble_instructions.iter())
-				.chain(postamble_instructions.iter())
-				.fold(0, |cost, instruction| {
-					cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
-				});
-
+			let mut gas_fn_cost = func_instructions.iter().fold(0, |cost, instruction| {
+				cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
+			});
 			// don't charge for the instructions used to fail when out of gas
 			let fail_cost = vec![
 				Instruction::I64Const(-1i64),           // non-charged instruction
@@ -142,18 +128,11 @@ pub mod mutable_global {
 			let func = fbuilder
 				.with_signature(gas_func_sig)
 				.body()
-				.with_locals([elements::Local::new(1, ValueType::I64)])
 				.with_instructions(elements::Instructions::new(func_instructions))
 				.build()
 				.build();
 
-			GasMeter::Internal {
-				global: self.global_name,
-				function: func,
-				cost: gas_fn_cost,
-				preamble: preamble_instructions,
-				postamble: postamble_instructions,
-			}
+			GasMeter::Internal { global: self.global_name, function: func, cost: gas_fn_cost }
 		}
 	}
 }

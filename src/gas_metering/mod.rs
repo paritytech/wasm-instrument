@@ -205,14 +205,8 @@ pub fn inject<R: Rules, B: Backend>(
 	let mut need_grow_counter = false;
 	let mut error = false;
 
-	let mut preamble = &vec![];
-	let mut postamble = &vec![];
 	let mut gas_fn_cost = 0u64;
-	if let GasMeter::Internal { global: _, function: _, cost, preamble: pre, postamble: post } =
-		&gas_func
-	{
-		preamble = &*pre;
-		postamble = &*post;
+	if let GasMeter::Internal { global: _, function: _, cost, .. } = &gas_func {
 		gas_fn_cost = *cost;
 	};
 
@@ -231,15 +225,8 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					if inject_counter(
-						func_body.code_mut(),
-						gas_fn_cost,
-						&preamble,
-						&postamble,
-						rules,
-						gas_func_idx,
-					)
-					.is_err()
+					if inject_counter(func_body.code_mut(), gas_fn_cost, rules, gas_func_idx)
+						.is_err()
 					{
 						error = true;
 						break
@@ -640,28 +627,17 @@ fn determine_metered_blocks<R: Rules>(
 fn inject_counter<R: Rules>(
 	instructions: &mut elements::Instructions,
 	gas_function_cost: u64,
-	preamble_instructions: &Vec<elements::Instruction>,
-	postamble_instructions: &Vec<elements::Instruction>,
 	rules: &R,
 	gas_func: u32,
 ) -> Result<(), ()> {
 	let blocks = determine_metered_blocks(instructions, rules)?;
-	insert_metering_calls(
-		instructions,
-		gas_function_cost,
-		preamble_instructions,
-		postamble_instructions,
-		blocks,
-		gas_func,
-	)
+	insert_metering_calls(instructions, gas_function_cost, blocks, gas_func)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
 fn insert_metering_calls(
 	instructions: &mut elements::Instructions,
 	gas_function_cost: u64,
-	preamble_instructions: &Vec<elements::Instruction>,
-	postamble_instructions: &Vec<elements::Instruction>,
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
@@ -679,14 +655,8 @@ fn insert_metering_calls(
 		// If there the next block starts at this position, inject metering instructions.
 		let used_block = if let Some(block) = block_iter.peek() {
 			if block.start_pos == original_pos {
-				for i in preamble_instructions {
-					new_instrs.push(i.clone());
-				}
 				new_instrs.push(I64Const((block.cost + gas_function_cost) as i64));
 				new_instrs.push(Call(gas_func));
-				for i in postamble_instructions {
-					new_instrs.push(i.clone());
-				}
 				true
 			} else {
 				false
