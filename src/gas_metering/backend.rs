@@ -28,10 +28,7 @@ pub trait Backend {
 	fn gas_meter<R: Rules>(self, module: &elements::Module, rules: &R) -> GasMeter;
 }
 
-/// Gas metering with an external function.
-///
-/// This is slow because calling imported functions is a heavy operation.
-/// For a faster gas metering see [`super::mutable_global`].
+/// Gas metering with an external host function.
 pub mod host_function {
 	use super::{Backend, GasMeter, Rules};
 	use parity_wasm::elements::Module;
@@ -57,6 +54,19 @@ pub mod host_function {
 }
 
 /// Gas metering with a mutable global.
+///
+/// # Note
+///
+/// Not for all execution engines this method gives performance wins compared to using an [external
+/// host function](host_function). Still in any case a Wasm module instrumented with this method
+/// will likely have a larger size. See benchmarks and size overhead tests for examples of how to
+/// make measurements needed to decide which gas metering method is better in your particular case.
+///
+/// # Warning
+///
+/// It is not recommended to apply [stack limiter](crate::inject_stack_limiter) instrumentation to a
+/// module instrumented with this type of gas metering. This could lead to a massive module size
+/// bloat. This is a known issue to be fixed in upcoming versions.
 pub mod mutable_global {
 	use super::{Backend, GasMeter, Rules};
 	use alloc::vec;

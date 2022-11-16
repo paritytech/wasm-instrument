@@ -58,7 +58,7 @@ fn stack_height_limiter(c: &mut Criterion) {
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wasmi::{
 	self,
-	core::{memory_units, Value, F32},
+	core::{Pages, Value, F32},
 	Caller, Config, Engine, Extern, Func, Instance, Linker, Memory, StackLimits, Store,
 };
 fn prepare_module<P: Backend>(backend: P, input: &[u8]) -> (wasmi::Module, Store<u64>) {
@@ -194,7 +194,7 @@ fn gas_metered_recursive_ok(c: &mut Criterion) {
 		let backend = mutable_global::Injector::new("gas_left");
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 
@@ -241,7 +241,7 @@ fn gas_metered_fibonacci_recursive(c: &mut Criterion) {
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 
@@ -287,7 +287,7 @@ fn gas_metered_fac_recursive(c: &mut Criterion) {
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 		let fac = instance
@@ -330,7 +330,7 @@ fn gas_metered_count_until(c: &mut Criterion) {
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 		let count_until =
@@ -424,7 +424,7 @@ fn gas_metered_vec_add(c: &mut Criterion) {
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let vec_add = instance.get_export(&store, "vec_add").and_then(Extern::into_func).unwrap();
 		let mem = instance.get_export(&store, "mem").and_then(Extern::into_memory).unwrap();
-		mem.grow(&mut store, memory_units::Pages(25)).unwrap();
+		mem.grow(&mut store, Pages::new(25).unwrap()).unwrap();
 		test_for(
 			b,
 			vec_add,
@@ -440,12 +440,12 @@ fn gas_metered_vec_add(c: &mut Criterion) {
 		let backend = mutable_global::Injector::new("gas_left");
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 		let vec_add = instance.get_export(&store, "vec_add").and_then(Extern::into_func).unwrap();
 		let mem = instance.get_export(&store, "mem").and_then(Extern::into_memory).unwrap();
-		mem.grow(&mut store, memory_units::Pages(25)).unwrap();
+		mem.grow(&mut store, Pages::new(25).unwrap()).unwrap();
 		test_for(
 			b,
 			vec_add,
@@ -489,7 +489,7 @@ fn gas_metered_tiny_keccak(c: &mut Criterion) {
 		let backend = mutable_global::Injector::new("gas_left");
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 		let prepare = instance
@@ -533,7 +533,7 @@ fn gas_metered_global_bump(c: &mut Criterion) {
 		let backend = mutable_global::Injector::new("gas_left");
 		let (module, mut store) = prepare_module(backend, &wasm_bytes);
 		// Add the gas_left mutable global
-		let mut linker = <Linker<u64>>::new();
+		let linker = <Linker<u64>>::new();
 		let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
 		let mut store = add_gas_left_global(&instance, store);
 		let bump = instance.get_export(&store, "bump").and_then(Extern::into_func).unwrap();
