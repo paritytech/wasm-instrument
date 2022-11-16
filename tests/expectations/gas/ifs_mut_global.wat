@@ -2,17 +2,17 @@
   (type (;0;) (func (param i32) (result i32)))
   (type (;1;) (func (param i64)))
   (func (;0;) (type 0) (param $x i32) (result i32)
-    i64.const 2
+    i64.const 13
     call 1
     i32.const 1
-    if (result i32)  ;; label = @1
-      i64.const 3
+    if (result i32) ;; label = @1
+      i64.const 14
       call 1
       local.get $x
       i32.const 1
       i32.add
     else
-      i64.const 2
+      i64.const 13
       call 1
       local.get $x
       i32.popcnt
@@ -20,20 +20,18 @@
   )
   (func (;1;) (type 1) (param i64)
     global.get 0
-    i64.const 13
-    i64.sub
     local.get 0
-    i64.lt_u
-    if  ;; label = @1
-      i64.const -1
-      global.set 0
-      unreachable
-    else
+    i64.ge_u
+    if ;; label = @1
       global.get 0
       local.get 0
       i64.sub
       global.set 0
+      return
     end
+    i64.const -1
+    global.set 0
+    unreachable
   )
   (global (;0;) (mut i64) i64.const 0)
   (export "gas_left" (global 0))

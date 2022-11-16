@@ -5,7 +5,7 @@
   (import "env" "ext_return" (func $ext_return (;0;) (type 0)))
   (import "env" "memory" (memory (;0;) 1 1))
   (func $start (;1;) (type 1)
-    i64.const 4
+    i64.const 15
     call 3
     i32.const 8
     i32.const 4
@@ -15,20 +15,18 @@
   (func (;2;) (type 1))
   (func (;3;) (type 2) (param i64)
     global.get 0
-    i64.const 13
-    i64.sub
     local.get 0
-    i64.lt_u
-    if  ;; label = @1
-      i64.const -1
-      global.set 0
-      unreachable
-    else
+    i64.ge_u
+    if ;; label = @1
       global.get 0
       local.get 0
       i64.sub
       global.set 0
+      return
     end
+    i64.const -1
+    global.set 0
+    unreachable
   )
   (global (;0;) (mut i64) i64.const 0)
   (export "call" (func 2))

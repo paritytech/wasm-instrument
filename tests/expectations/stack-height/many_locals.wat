@@ -11,7 +11,7 @@
     global.get 0
     i32.const 1024
     i32.gt_u
-    if  ;; label = @1
+    if ;; label = @1
       unreachable
     end
     call $one-group-many-locals
