@@ -58,9 +58,8 @@ pub mod host_function {
 /// # Note
 ///
 /// Not for all execution engines this method gives performance wins compared to using an [external
-/// host function](host_function). Still in any case a Wasm module instrumented with this method
-/// will likely have a larger size. See benchmarks and size overhead tests for examples of how to
-/// make measurements needed to decide which gas metering method is better in your particular case.
+/// host function](host_function). See benchmarks and size overhead tests for examples of how to
+/// make measurements needed to decide which gas metering method is better for your particular case.
 ///
 /// # Warning
 ///
@@ -109,12 +108,12 @@ pub mod mutable_global {
 				Instruction::GetLocal(0),
 				Instruction::I64Sub,
 				Instruction::SetGlobal(gas_global_idx),
-				Instruction::Return,
-				Instruction::End,
+				Instruction::Else,
 				// sentinel val u64::MAX
 				Instruction::I64Const(-1i64),           // non-charged instruction
 				Instruction::SetGlobal(gas_global_idx), // non-charged instruction
 				Instruction::Unreachable,               // non-charged instruction
+				Instruction::End,
 				Instruction::End,
 			];
 

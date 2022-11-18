@@ -42,49 +42,49 @@
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `17.89 s` (✅ **1.00x**)                 | `19.79 s` (✅ **1.11x slower**)            |
+|        | `20.81 s` (✅ **1.00x**)                 | `20.20 s` (✅ **1.03x faster**)            |
 
 ### recursive_ok, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `502.19 us` (✅ **1.00x**)               | `555.46 us` (✅ **1.11x slower**)          |
+|        | `367.11 us` (✅ **1.00x**)               | `585.39 us` (❌ *1.59x slower*)            |
 
 ### fibonacci_recursive, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `10.68 us` (✅ **1.00x**)                | `14.35 us` (❌ *1.34x slower*)             |
+|        | `9.15 us` (✅ **1.00x**)                 | `13.56 us` (❌ *1.48x slower*)             |
 
 ### factorial_recursive, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `1.45 us` (✅ **1.00x**)                 | `1.86 us` (❌ *1.29x slower*)              |
+|        | `1.50 us` (✅ **1.00x**)                 | `1.98 us` (❌ *1.32x slower*)              |
 
 ### count_until, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `5.47 ms` (✅ **1.00x**)                 | `7.83 ms` (❌ *1.43x slower*)              |
+|        | `5.03 ms` (✅ **1.00x**)                 | `8.13 ms` (❌ *1.62x slower*)              |
 
 ### memory_vec_add, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `5.82 ms` (✅ **1.00x**)                 | `7.98 ms` (❌ *1.37x slower*)              |
+|        | `6.21 ms` (✅ **1.00x**)                 | `8.45 ms` (❌ *1.36x slower*)              |
 
 ### wasm_kernel::tiny_keccak, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `997.62 us` (✅ **1.00x**)               | `1.14 ms` (❌ *1.14x slower*)              |
+|        | `925.22 us` (✅ **1.00x**)               | `1.08 ms` (❌ *1.17x slower*)              |
 
 ### global_bump, instrumented
 
 |        | `with host_function::Injector`          | `with mutable_global::Injector`           |
 |:-------|:----------------------------------------|:----------------------------------------- |
-|        | `3.61 ms` (✅ **1.00x**)                 | `6.22 ms` (❌ *1.72x slower*)              |
+|        | `3.79 ms` (✅ **1.00x**)                 | `7.03 ms` (❌ *1.86x slower*)              |
 
 ---
 Made with [criterion-table](https://github.com/nu11ptr/criterion-table)

@@ -551,7 +551,7 @@ criterion_group!(
 	name = coremark;
 	config = Criterion::default()
 		.sample_size(10)
-		.measurement_time(Duration::from_millis(250000))
+		.measurement_time(Duration::from_millis(275000))
 		.warm_up_time(Duration::from_millis(1000));
 	targets =
 		 gas_metered_coremark,
