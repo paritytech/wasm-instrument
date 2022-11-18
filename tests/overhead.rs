@@ -70,10 +70,10 @@ fn size_overheads_all(files: ReadDir) -> Vec<InstrumentedWasmResults> {
 			let stack_limited_len = stack_limited_mod_len(orig_module).1;
 
 			let (_gm_hf_sl_mod, gas_metered_host_fn_then_stack_limited_len) =
-				stack_limited_mod_len(gm_host_fn_module.clone());
+				stack_limited_mod_len(gm_host_fn_module);
 
 			let (_gm_mg_sl_module, gas_metered_mut_glob_then_stack_limited_len) =
-				stack_limited_mod_len(gm_mut_global_module.clone());
+				stack_limited_mod_len(gm_mut_global_module);
 
 			InstrumentedWasmResults {
 				filename,
@@ -159,8 +159,8 @@ fn print_gas_metered_sizes() {
 		let original_size = &r.1.original_module_len / 1024;
 		let host_fn = &r.1.gas_metered_host_fn_len / 1024;
 		let mut_glob = &r.1.gas_metered_mut_glob_len / 1024;
-		let host_fn_percent = &r.1.gas_metered_host_fn_len * 100 / &r.1.original_module_len;
-		let mut_glob_percent = &r.1.gas_metered_mut_glob_len * 100 / &r.1.original_module_len;
+		let host_fn_percent = &r.1.gas_metered_host_fn_len * 100 / r.1.original_module_len;
+		let mut_glob_percent = &r.1.gas_metered_mut_glob_len * 100 / r.1.original_module_len;
 		let host_fn = format!("{host_fn} kb ({host_fn_percent:}%)");
 		let mut_glob = format!("{mut_glob} kb ({mut_glob_percent:}%)");
 		let diff = &r.0;
