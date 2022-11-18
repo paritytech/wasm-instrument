@@ -763,12 +763,12 @@ mod tests {
 				Instruction::GetLocal(0),
 				Instruction::I64Sub,
 				Instruction::SetGlobal(1),
-				Instruction::Return,
-				Instruction::End,
+				Instruction::Else,
 				// sentinel val u64::MAX
 				Instruction::I64Const(-1i64), // non-charged instruction
 				Instruction::SetGlobal(1),    // non-charged instruction
 				Instruction::Unreachable,     // non-charged instruction
+				Instruction::End,
 				Instruction::End,
 			][..]
 		);

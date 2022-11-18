@@ -31,11 +31,11 @@
       local.get 0
       i64.sub
       global.set 0
-      return
+    else
+      i64.const -1
+      global.set 0
+      unreachable
     end
-    i64.const -1
-    global.set 0
-    unreachable
   )
   (global (;0;) (mut i64) i64.const 0)
   (export "simple" (func 0))
