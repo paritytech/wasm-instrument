@@ -19,18 +19,23 @@ fn dump<P: AsRef<Path>>(path: P, buf: &[u8]) -> io::Result<()> {
 	Ok(())
 }
 
-fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: F) {
+fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(
+	test_dir: &str,
+	in_name: &str,
+	out_name: &str,
+	test: F,
+) {
 	let mut fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	fixture_path.push("tests");
 	fixture_path.push("fixtures");
 	fixture_path.push(test_dir);
-	fixture_path.push(name);
+	fixture_path.push(in_name);
 
 	let mut expected_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	expected_path.push("tests");
 	expected_path.push("expectations");
 	expected_path.push(test_dir);
-	expected_path.push(name);
+	expected_path.push(out_name);
 
 	let fixture_wasm = wat::parse_file(&fixture_path).expect("Failed to read fixture");
 	validate(&fixture_wasm).expect("Fixture is invalid");
@@ -47,7 +52,7 @@ fn run_diff_test<F: FnOnce(&[u8]) -> Vec<u8>>(test_dir: &str, name: &str, test: 
 	if actual_wat != expected_wat {
 		println!("difference!");
 		println!("--- {}", expected_path.display());
-		println!("+++ {} test {}", test_dir, name);
+		println!("+++ {} test {}", test_dir, out_name);
 		for diff in diff::lines(expected_wat, &actual_wat) {
 			match diff {
 				diff::Result::Left(l) => println!("-{}", l),
@@ -71,13 +76,18 @@ mod stack_height {
 		( $name:ident ) => {
 			#[test]
 			fn $name() {
-				run_diff_test("stack-height", concat!(stringify!($name), ".wat"), |input| {
-					let module =
-						elements::deserialize_buffer(input).expect("Failed to deserialize");
-					let instrumented = instrument::inject_stack_limiter(module, 1024)
-						.expect("Failed to instrument with stack counter");
-					elements::serialize(instrumented).expect("Failed to serialize")
-				});
+				run_diff_test(
+					"stack-height",
+					concat!(stringify!($name), ".wat"),
+					concat!(stringify!($name), ".wat"),
+					|input| {
+						let module =
+							elements::deserialize_buffer(input).expect("Failed to deserialize");
+						let instrumented = instrument::inject_stack_limiter(module, 1024)
+							.expect("Failed to instrument with stack counter");
+						elements::serialize(instrumented).expect("Failed to serialize")
+					},
+				);
 			}
 		};
 	}
@@ -95,43 +105,53 @@ mod gas {
 	use super::*;
 
 	macro_rules! def_gas_test {
-		( ($name1:ident, $name2:ident) ) => {
+		( ($input:ident, $name1:ident, $name2:ident) ) => {
 			#[test]
 			fn $name1() {
-				run_diff_test("gas", concat!(stringify!($name1), ".wat"), |input| {
-					let rules = gas_metering::ConstantCostRules::default();
+				run_diff_test(
+					"gas",
+					concat!(stringify!($input), ".wat"),
+					concat!(stringify!($name1), ".wat"),
+					|input| {
+						let rules = gas_metering::ConstantCostRules::default();
 
-					let module: elements::Module =
-						elements::deserialize_buffer(input).expect("Failed to deserialize");
-					let module = module.parse_names().expect("Failed to parse names");
-					let backend = gas_metering::host_function::Injector::new("env", "gas");
+						let module: elements::Module =
+							elements::deserialize_buffer(input).expect("Failed to deserialize");
+						let module = module.parse_names().expect("Failed to parse names");
+						let backend = gas_metering::host_function::Injector::new("env", "gas");
 
-					let instrumented = gas_metering::inject(module, backend, &rules)
-						.expect("Failed to instrument with gas metering");
-					elements::serialize(instrumented).expect("Failed to serialize")
-				});
+						let instrumented = gas_metering::inject(module, backend, &rules)
+							.expect("Failed to instrument with gas metering");
+						elements::serialize(instrumented).expect("Failed to serialize")
+					},
+				);
 			}
 
 			#[test]
 			fn $name2() {
-				run_diff_test("gas", concat!(stringify!($name2), ".wat"), |input| {
-					let rules = gas_metering::ConstantCostRules::default();
+				run_diff_test(
+					"gas",
+					concat!(stringify!($input), ".wat"),
+					concat!(stringify!($name2), ".wat"),
+					|input| {
+						let rules = gas_metering::ConstantCostRules::default();
 
-					let module: elements::Module =
-						elements::deserialize_buffer(input).expect("Failed to deserialize");
-					let module = module.parse_names().expect("Failed to parse names");
-					let backend = gas_metering::mutable_global::Injector::new("gas_left");
-					let instrumented = gas_metering::inject(module, backend, &rules)
-						.expect("Failed to instrument with gas metering");
-					elements::serialize(instrumented).expect("Failed to serialize")
-				});
+						let module: elements::Module =
+							elements::deserialize_buffer(input).expect("Failed to deserialize");
+						let module = module.parse_names().expect("Failed to parse names");
+						let backend = gas_metering::mutable_global::Injector::new("gas_left");
+						let instrumented = gas_metering::inject(module, backend, &rules)
+							.expect("Failed to instrument with gas metering");
+						elements::serialize(instrumented).expect("Failed to serialize")
+					},
+				);
 			}
 		};
 	}
 
-	def_gas_test!((ifs_host_fn, ifs_mut_global));
-	def_gas_test!((simple_host_fn, simple_mut_global));
-	def_gas_test!((start_host_fn, start_mut_global));
-	def_gas_test!((call_host_fn, call_mut_global));
-	def_gas_test!((branch_host_fn, branch_mut_global));
+	def_gas_test!((ifs, ifs_host_fn, ifs_mut_global));
+	def_gas_test!((simple, simple_host_fn, simple_mut_global));
+	def_gas_test!((start, start_host_fn, start_mut_global));
+	def_gas_test!((call, call_host_fn, call_mut_global));
+	def_gas_test!((branch, branch_host_fn, branch_mut_global));
 }

@@ -1,7 +1,8 @@
 //! Provides backends for the gas metering instrumentation
-use parity_wasm::{builder::FunctionDefinition, elements};
+use parity_wasm::elements;
 
 /// Implementation details of the specific method of the gas metering.
+#[derive(Clone)]
 pub enum GasMeter {
 	/// Gas metering with an external function.
 	External {
@@ -14,8 +15,8 @@ pub enum GasMeter {
 	Internal {
 		/// Name of the mutable global to be exported.
 		global: &'static str,
-		/// Definition of the local gas counting function to be injected.
-		function: FunctionDefinition,
+		/// Body of the local gas counting function to be injected.
+		func_instructions: elements::Instructions,
 		/// Cost of the gas function execution.
 		cost: u64,
 	},
@@ -69,10 +70,7 @@ pub mod host_function {
 pub mod mutable_global {
 	use super::{Backend, GasMeter, Rules};
 	use alloc::vec;
-	use parity_wasm::{
-		builder,
-		elements::{self, Instruction, Module, ValueType},
-	};
+	use parity_wasm::elements::{self, Instruction, Module};
 	/// Injects a mutable global variable and a local function to the module to track
 	/// current gas left.
 	///
@@ -93,10 +91,6 @@ pub mod mutable_global {
 
 	impl Backend for Injector {
 		fn gas_meter<R: Rules>(self, module: &Module, rules: &R) -> GasMeter {
-			// Build local gas function
-			let fbuilder = builder::FunctionBuilder::new();
-			let gas_func_sig =
-				builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
 			let gas_global_idx = module.globals_space() as u32;
 
 			let func_instructions = vec![
@@ -134,14 +128,11 @@ pub mod mutable_global {
 
 			gas_fn_cost -= fail_cost;
 
-			let func = fbuilder
-				.with_signature(gas_func_sig)
-				.body()
-				.with_instructions(elements::Instructions::new(func_instructions))
-				.build()
-				.build();
-
-			GasMeter::Internal { global: self.global_name, function: func, cost: gas_fn_cost }
+			GasMeter::Internal {
+				global: self.global_name,
+				func_instructions: elements::Instructions::new(func_instructions),
+				cost: gas_fn_cost,
+			}
 		}
 	}
 }
