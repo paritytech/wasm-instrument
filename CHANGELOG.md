@@ -16,6 +16,13 @@ The interface provided to smart contracts will adhere to semver with one excepti
 major version bumps will be backwards compatible with regard to already deployed contracts.
 In other words: Upgrading this pallet will not break pre-existing contracts.
 
+## [Unreleased]
+
+### New
+
+- Add new gas metering method: mutable global + local gas function
+[#34](https://github.com/paritytech/wasm-instrument/pull/34)
+
 ## [v0.3.0]
 
 ### Changed

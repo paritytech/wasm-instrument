@@ -1,8 +1,12 @@
-//! This module is used to instrument a Wasm module with gas metering code.
+//! This module is used to instrument a Wasm module with the gas metering code.
 //!
 //! The primary public interface is the [`inject`] function which transforms a given
 //! module into one that charges gas for code to be executed. See function documentation for usage
 //! and details.
+
+mod backend;
+
+pub use backend::{host_function, mutable_global, Backend, GasMeter};
 
 #[cfg(test)]
 mod validation;
@@ -67,7 +71,7 @@ impl MemoryGrowCost {
 /// # Note
 ///
 /// In a production environment it usually makes no sense to assign every instruction
-/// the same cost. A proper implemention of [`Rules`] should be prived that is probably
+/// the same cost. A proper implemention of [`Rules`] should be provided that is probably
 /// created by benchmarking.
 pub struct ConstantCostRules {
 	instruction_cost: u32,
@@ -101,84 +105,153 @@ impl Rules for ConstantCostRules {
 	}
 }
 
-/// Transforms a given module into one that charges gas for code to be executed by proxy of an
-/// imported gas metering function.
+/// Transforms a given module into one that tracks the gas charged during its execution.
 ///
-/// The output module imports a function "gas" from the specified module with type signature
-/// [i64] -> []. The argument is the amount of gas required to continue execution. The external
-/// function is meant to keep track of the total amount of gas used and trap or otherwise halt
-/// execution of the runtime if the gas usage exceeds some allowed limit.
+/// The output module uses the `gas` function to track the gas spent. The function could be either
+/// an imported or a local one modifying a mutable global. The argument is the amount of gas
+/// required to continue execution. The execution engine is meant to keep track of the total amount
+/// of gas used and trap or otherwise halt execution of the runtime if the gas usage exceeds some
+/// allowed limit.
 ///
-/// The body of each function is divided into metered blocks, and the calls to charge gas are
-/// inserted at the beginning of every such block of code. A metered block is defined so that,
-/// unless there is a trap, either all of the instructions are executed or none are. These are
-/// similar to basic blocks in a control flow graph, except that in some cases multiple basic
-/// blocks can be merged into a single metered block. This is the case if any path through the
-/// control flow graph containing one basic block also contains another.
+/// The body of each function of the original module is divided into metered blocks, and the calls
+/// to charge gas are inserted at the beginning of every such block of code. A metered block is
+/// defined so that, unless there is a trap, either all of the instructions are executed or none
+/// are. These are similar to basic blocks in a control flow graph, except that in some cases
+/// multiple basic blocks can be merged into a single metered block. This is the case if any path
+/// through the control flow graph containing one basic block also contains another.
 ///
-/// Charging gas is at the beginning of each metered block ensures that 1) all instructions
+/// Charging gas at the beginning of each metered block ensures that 1) all instructions
 /// executed are already paid for, 2) instructions that will not be executed are not charged for
-/// unless execution traps, and 3) the number of calls to "gas" is minimized. The corollary is that
-/// modules instrumented with this metering code may charge gas for instructions not executed in
-/// the event of a trap.
+/// unless execution traps, and 3) the number of calls to `gas` is minimized. The corollary is
+/// that modules instrumented with this metering code may charge gas for instructions not
+/// executed in the event of a trap.
 ///
-/// Additionally, each `memory.grow` instruction found in the module is instrumented to first make
-/// a call to charge gas for the additional pages requested. This cannot be done as part of the
-/// block level gas charges as the gas cost is not static and depends on the stack argument to
-/// `memory.grow`.
+/// Additionally, each `memory.grow` instruction found in the module is instrumented to first
+/// make a call to charge gas for the additional pages requested. This cannot be done as part of
+/// the block level gas charges as the gas cost is not static and depends on the stack argument
+/// to `memory.grow`.
 ///
 /// The above transformations are performed for every function body defined in the module. This
 /// function also rewrites all function indices references by code, table elements, etc., since
-/// the addition of an imported functions changes the indices of module-defined functions. If the
-/// the module has a NameSection, added by calling `parse_names`, the indices will also be updated.
+/// the addition of an imported functions changes the indices of module-defined functions. If
+/// the module has a `NameSection`, added by calling `parse_names`, the indices will also be
+/// updated.
+///
+/// Syncronizing the amount of gas charged with the execution engine can be done in two ways. The
+/// first way is by calling the imported `gas` host function, see [`host_function`] for details. The
+/// second way is by using a local `gas` function together with a mutable global, see
+/// [`mutable_global`] for details.
 ///
 /// This routine runs in time linear in the size of the input module.
 ///
 /// The function fails if the module contains any operation forbidden by gas rule set, returning
-/// the original module as an Err.
-pub fn inject<R: Rules>(
+/// the original module as an `Err`.
+pub fn inject<R: Rules, B: Backend>(
 	module: elements::Module,
+	backend: B,
 	rules: &R,
-	gas_module_name: &str,
 ) -> Result<elements::Module, elements::Module> {
-	// Injecting gas counting external
+	// Prepare module and return the gas function
+	let gas_meter = backend.gas_meter(&module, rules);
+
+	let import_count = module.import_count(elements::ImportCountType::Function) as u32;
+	let functions_space = module.functions_space() as u32;
+	let gas_global_idx = module.globals_space() as u32;
+
 	let mut mbuilder = builder::from_module(module);
-	let import_sig =
-		mbuilder.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
 
-	mbuilder.push_import(
-		builder::import()
-			.module(gas_module_name)
-			.field("gas")
-			.external()
-			.func(import_sig)
-			.build(),
-	);
+	// Calculate the indexes and gas function cost,
+	// for external gas function the cost is counted on the host side
+	let (gas_func_idx, total_func, gas_fn_cost) = match gas_meter {
+		GasMeter::External { module: gas_module, function } => {
+			// Inject the import of the gas function
+			let import_sig = mbuilder
+				.push_signature(builder::signature().with_param(ValueType::I64).build_sig());
+			mbuilder.push_import(
+				builder::import()
+					.module(gas_module)
+					.field(function)
+					.external()
+					.func(import_sig)
+					.build(),
+			);
 
-	// back to plain module
+			(import_count, functions_space + 1, 0)
+		},
+		GasMeter::Internal { global, ref func_instructions, cost } => {
+			// Inject the gas counting global
+			mbuilder.push_global(
+				builder::global()
+					.with_type(ValueType::I64)
+					.mutable()
+					.init_expr(Instruction::I64Const(0))
+					.build(),
+			);
+			// Inject the export entry for the gas counting global
+			let ebuilder = builder::ExportBuilder::new();
+			let global_export = ebuilder
+				.field(global)
+				.with_internal(elements::Internal::Global(gas_global_idx))
+				.build();
+			mbuilder.push_export(global_export);
+
+			let func_idx = functions_space;
+
+			// Build local gas function
+			let gas_func_sig =
+				builder::SignatureBuilder::new().with_param(ValueType::I64).build_sig();
+
+			let function = builder::FunctionBuilder::new()
+				.with_signature(gas_func_sig)
+				.body()
+				.with_instructions(func_instructions.clone())
+				.build()
+				.build();
+
+			// Inject local gas function
+			mbuilder.push_function(function);
+
+			(func_idx, func_idx + 1, cost)
+		},
+	};
+
+	// We need the built the module for making injections to its blocks
 	let mut module = mbuilder.build();
 
-	// calculate actual function index of the imported definition
-	//    (subtract all imports that are NOT functions)
-
-	let gas_func = module.import_count(elements::ImportCountType::Function) as u32 - 1;
-	let total_func = module.functions_space() as u32;
 	let mut need_grow_counter = false;
 	let mut error = false;
 
-	// Updating calling addresses (all calls to function index >= `gas_func` should be incremented)
+	// Iterate over module sections and perform needed transformations.
+	// Indexes are needed to be fixed up in `GasMeter::External` case, as it adds an imported
+	// function, which goes to the beginning of the module's functions space.
 	for section in module.sections_mut() {
 		match section {
-			elements::Section::Code(code_section) =>
-				for func_body in code_section.bodies_mut() {
-					for instruction in func_body.code_mut().elements_mut().iter_mut() {
-						if let Instruction::Call(call_index) = instruction {
-							if *call_index >= gas_func {
-								*call_index += 1
+			elements::Section::Code(code_section) => {
+				let injection_targets = match gas_meter {
+					GasMeter::External { .. } => code_section.bodies_mut().as_mut_slice(),
+					// Don't inject counters to the local gas function, which is the last one as
+					// it's just added. Cost for its execution is added statically before each
+					// invocation (see `inject_counter()`).
+					GasMeter::Internal { .. } => {
+						let len = code_section.bodies().len();
+						&mut code_section.bodies_mut()[..len - 1]
+					},
+				};
+
+				for func_body in injection_targets {
+					// Increment calling addresses if needed
+					if let GasMeter::External { .. } = gas_meter {
+						for instruction in func_body.code_mut().elements_mut().iter_mut() {
+							if let Instruction::Call(call_index) = instruction {
+								if *call_index >= gas_func_idx {
+									*call_index += 1
+								}
 							}
 						}
 					}
-					if inject_counter(func_body.code_mut(), rules, gas_func).is_err() {
+					if inject_counter(func_body.code_mut(), gas_fn_cost, rules, gas_func_idx)
+						.is_err()
+					{
 						error = true;
 						break
 					}
@@ -187,42 +260,50 @@ pub fn inject<R: Rules>(
 					{
 						need_grow_counter = true;
 					}
-				},
-			elements::Section::Export(export_section) => {
-				for export in export_section.entries_mut() {
-					if let elements::Internal::Function(func_index) = export.internal_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
-						}
-					}
 				}
 			},
+			elements::Section::Export(export_section) =>
+				if let GasMeter::External { module: _, function: _ } = gas_meter {
+					for export in export_section.entries_mut() {
+						if let elements::Internal::Function(func_index) = export.internal_mut() {
+							if *func_index >= gas_func_idx {
+								*func_index += 1
+							}
+						}
+					}
+				},
 			elements::Section::Element(elements_section) => {
 				// Note that we do not need to check the element type referenced because in the
 				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				for segment in elements_section.entries_mut() {
-					// update all indirect call addresses initial values
-					for func_index in segment.members_mut() {
-						if *func_index >= gas_func {
-							*func_index += 1
+				if let GasMeter::External { .. } = gas_meter {
+					for segment in elements_section.entries_mut() {
+						// update all indirect call addresses initial values
+						for func_index in segment.members_mut() {
+							if *func_index >= gas_func_idx {
+								*func_index += 1
+							}
 						}
 					}
 				}
 			},
 			elements::Section::Start(start_idx) =>
-				if *start_idx >= gas_func {
-					*start_idx += 1
+				if let GasMeter::External { .. } = gas_meter {
+					if *start_idx >= gas_func_idx {
+						*start_idx += 1
+					}
 				},
 			elements::Section::Name(s) =>
-				for functions in s.functions_mut() {
-					*functions.names_mut() =
-						IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-							if idx >= gas_func {
-								idx += 1;
-							}
+				if let GasMeter::External { .. } = gas_meter {
+					for functions in s.functions_mut() {
+						*functions.names_mut() =
+							IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
+								if idx >= gas_func_idx {
+									idx += 1;
+								}
 
-							(idx, name.clone())
-						}));
+								(idx, name.clone())
+							}));
+					}
 				},
 			_ => {},
 		}
@@ -233,7 +314,7 @@ pub fn inject<R: Rules>(
 	}
 
 	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func))
+		Ok(add_grow_counter(module, rules, gas_func_idx))
 	} else {
 		Ok(module)
 	}
@@ -558,16 +639,18 @@ fn determine_metered_blocks<R: Rules>(
 
 fn inject_counter<R: Rules>(
 	instructions: &mut elements::Instructions,
+	gas_function_cost: u64,
 	rules: &R,
 	gas_func: u32,
 ) -> Result<(), ()> {
 	let blocks = determine_metered_blocks(instructions, rules)?;
-	insert_metering_calls(instructions, blocks, gas_func)
+	insert_metering_calls(instructions, gas_function_cost, blocks, gas_func)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
 fn insert_metering_calls(
 	instructions: &mut elements::Instructions,
+	gas_function_cost: u64,
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
@@ -585,7 +668,7 @@ fn insert_metering_calls(
 		// If there the next block starts at this position, inject metering instructions.
 		let used_block = if let Some(block) = block_iter.peek() {
 			if block.start_pos == original_pos {
-				new_instrs.push(I64Const(block.cost as i64));
+				new_instrs.push(I64Const((block.cost + gas_function_cost) as i64));
 				new_instrs.push(Call(gas_func));
 				true
 			} else {
@@ -627,7 +710,7 @@ mod tests {
 	}
 
 	#[test]
-	fn simple_grow() {
+	fn simple_grow_host_fn() {
 		let module = parse_wat(
 			r#"(module
 			(func (result i32)
@@ -637,8 +720,9 @@ mod tests {
 			(memory 0 1)
 			)"#,
 		);
-
-		let injected_module = inject(module, &ConstantCostRules::new(1, 10_000), "env").unwrap();
+		let backend = host_function::Injector::new("env", "gas");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -663,7 +747,64 @@ mod tests {
 	}
 
 	#[test]
-	fn grow_no_gas_no_track() {
+	fn simple_grow_mut_global() {
+		let module = parse_wat(
+			r#"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)"#,
+		);
+		let backend = mutable_global::Injector::new("gas_left");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 0).unwrap(),
+			&vec![I64Const(13), Call(1), GetGlobal(0), Call(2), End][..]
+		);
+		assert_eq!(
+			get_function_body(&injected_module, 1).unwrap(),
+			&vec![
+				Instruction::GetGlobal(1),
+				Instruction::GetLocal(0),
+				Instruction::I64GeU,
+				Instruction::If(elements::BlockType::NoResult),
+				Instruction::GetGlobal(1),
+				Instruction::GetLocal(0),
+				Instruction::I64Sub,
+				Instruction::SetGlobal(1),
+				Instruction::Else,
+				// sentinel val u64::MAX
+				Instruction::I64Const(-1i64), // non-charged instruction
+				Instruction::SetGlobal(1),    // non-charged instruction
+				Instruction::Unreachable,     // non-charged instruction
+				Instruction::End,
+				Instruction::End,
+			][..]
+		);
+		assert_eq!(
+			get_function_body(&injected_module, 2).unwrap(),
+			&vec![
+				GetLocal(0),
+				GetLocal(0),
+				I64ExtendUI32,
+				I64Const(10000),
+				I64Mul,
+				Call(1),
+				GrowMemory(0),
+				End,
+			][..]
+		);
+
+		let binary = serialize(injected_module).expect("serialization failed");
+		wasmparser::validate(&binary).unwrap();
+	}
+
+	#[test]
+	fn grow_no_gas_no_track_host_fn() {
 		let module = parse_wat(
 			r"(module
 			(func (result i32)
@@ -673,8 +814,9 @@ mod tests {
 			(memory 0 1)
 			)",
 		);
-
-		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
+		let backend = host_function::Injector::new("env", "gas");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -688,7 +830,33 @@ mod tests {
 	}
 
 	#[test]
-	fn call_index() {
+	fn grow_no_gas_no_track_mut_global() {
+		let module = parse_wat(
+			r"(module
+			(func (result i32)
+			  global.get 0
+			  memory.grow)
+			(global i32 (i32.const 42))
+			(memory 0 1)
+			)",
+		);
+		let backend = mutable_global::Injector::new("gas_left");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 0).unwrap(),
+			&vec![I64Const(13), Call(1), GetGlobal(0), GrowMemory(0), End][..]
+		);
+
+		assert_eq!(injected_module.functions_space(), 2);
+
+		let binary = serialize(injected_module).expect("serialization failed");
+		wasmparser::validate(&binary).unwrap();
+	}
+
+	#[test]
+	fn call_index_host_fn() {
 		let module = builder::module()
 			.global()
 			.value_type()
@@ -725,7 +893,9 @@ mod tests {
 			.build()
 			.build();
 
-		let injected_module = inject(module, &ConstantCostRules::default(), "env").unwrap();
+		let backend = host_function::Injector::new("env", "gas");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 1).unwrap(),
@@ -751,20 +921,89 @@ mod tests {
 		);
 	}
 
+	#[test]
+	fn call_index_mut_global() {
+		let module = builder::module()
+			.global()
+			.value_type()
+			.i32()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.build()
+			.build()
+			.function()
+			.signature()
+			.param()
+			.i32()
+			.build()
+			.body()
+			.with_instructions(elements::Instructions::new(vec![
+				Call(0),
+				If(elements::BlockType::NoResult),
+				Call(0),
+				Call(0),
+				Call(0),
+				Else,
+				Call(0),
+				Call(0),
+				End,
+				Call(0),
+				End,
+			]))
+			.build()
+			.build()
+			.build();
+
+		let backend = mutable_global::Injector::new("gas_left");
+		let injected_module =
+			super::inject(module, backend, &ConstantCostRules::default()).unwrap();
+
+		assert_eq!(
+			get_function_body(&injected_module, 1).unwrap(),
+			&vec![
+				I64Const(14),
+				Call(2),
+				Call(0),
+				If(elements::BlockType::NoResult),
+				I64Const(14),
+				Call(2),
+				Call(0),
+				Call(0),
+				Call(0),
+				Else,
+				I64Const(13),
+				Call(2),
+				Call(0),
+				Call(0),
+				End,
+				Call(0),
+				End
+			][..]
+		);
+	}
+
 	fn parse_wat(source: &str) -> elements::Module {
 		let module_bytes = wat::parse_str(source).unwrap();
 		elements::deserialize_buffer(module_bytes.as_ref()).unwrap()
 	}
 
 	macro_rules! test_gas_counter_injection {
-		(name = $name:ident; input = $input:expr; expected = $expected:expr) => {
+		(names = ($name1:ident, $name2:ident); input = $input:expr; expected = $expected:expr) => {
 			#[test]
-			fn $name() {
+			fn $name1() {
 				let input_module = parse_wat($input);
 				let expected_module = parse_wat($expected);
-
-				let injected_module = inject(input_module, &ConstantCostRules::default(), "env")
-					.expect("inject_gas_counter call failed");
+				let injected_module = super::inject(
+					input_module,
+					host_function::Injector::new("env", "gas"),
+					&ConstantCostRules::default(),
+				)
+				.expect("inject_gas_counter call failed");
 
 				let actual_func_body = get_function_body(&injected_module, 0)
 					.expect("injected module must have a function body");
@@ -773,11 +1012,51 @@ mod tests {
 
 				assert_eq!(actual_func_body, expected_func_body);
 			}
+
+			#[test]
+			fn $name2() {
+				let input_module = parse_wat($input);
+				let draft_module = parse_wat($expected);
+				let gas_fun_cost = match mutable_global::Injector::new("gas_left")
+					.gas_meter(&input_module, &ConstantCostRules::default())
+				{
+					GasMeter::Internal { cost, .. } => cost as i64,
+					_ => 0i64,
+				};
+
+				let injected_module = super::inject(
+					input_module,
+					mutable_global::Injector::new("gas_left"),
+					&ConstantCostRules::default(),
+				)
+				.expect("inject_gas_counter call failed");
+
+				let actual_func_body = get_function_body(&injected_module, 0)
+					.expect("injected module must have a function body");
+				let mut expected_func_body = get_function_body(&draft_module, 0)
+					.expect("post-module must have a function body")
+					.to_vec();
+
+				// modify expected instructions set for gas_metering::mutable_global
+				let mut iter = expected_func_body.iter_mut();
+				while let Some(ins) = iter.next() {
+					if let I64Const(cost) = ins {
+						if let Some(ins_next) = iter.next() {
+							if let Call(0) = ins_next {
+								*cost += gas_fun_cost;
+								*ins_next = Call(1);
+							}
+						}
+					}
+				}
+
+				assert_eq!(actual_func_body, &expected_func_body);
+			}
 		};
 	}
 
 	test_gas_counter_injection! {
-		name = simple;
+		names = (simple_host_fn, simple_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -792,7 +1071,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = nested;
+		names = (nested_host_fn, nested_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -817,7 +1096,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = ifelse;
+		names = (ifelse_host_fn, ifelse_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -852,7 +1131,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_innermost;
+		names = (branch_innermost_host_fn, branch_innermost_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -882,7 +1161,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_outer_block;
+		names = (branch_outer_block_host_fn, branch_outer_block_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -921,7 +1200,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_outer_loop;
+		names = (branch_outer_loop_host_fn, branch_outer_loop_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -967,7 +1246,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = return_from_func;
+		names = (return_from_func_host_fn, return_from_func_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -992,7 +1271,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = branch_from_if_not_else;
+		names = (branch_from_if_not_else_host_fn, branch_from_if_not_else_mut_global);
 		input = r#"
 		(module
 			(func (result i32)
@@ -1028,7 +1307,7 @@ mod tests {
 	}
 
 	test_gas_counter_injection! {
-		name = empty_loop;
+		names = (empty_loop_host_fn, empty_loop_mut_global);
 		input = r#"
 		(module
 			(func
