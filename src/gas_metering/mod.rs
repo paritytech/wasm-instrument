@@ -584,6 +584,7 @@ fn add_grow_counter<R: Rules>(
 fn determine_metered_blocks<R: Rules>(
 	instructions: &elements::Instructions,
 	rules: &R,
+	locals_count: u32,
 ) -> Result<Vec<MeteredBlock>, ()> {
 	use parity_wasm::elements::Instruction::*;
 
@@ -591,6 +592,9 @@ fn determine_metered_blocks<R: Rules>(
 
 	// Begin an implicit function (i.e. `func...end`) block.
 	counter.begin_control_block(0, false);
+	// Add locals initialization cost to the function block.
+	let locals_init_cost = (rules.local_init_cost()).checked_mul(locals_count).ok_or(())?;
+	counter.increment(locals_init_cost)?;
 
 	for cursor in 0..instructions.elements().len() {
 		let instruction = &instructions.elements()[cursor];
@@ -662,17 +666,14 @@ fn inject_counter<R: Rules>(
 	rules: &R,
 	gas_func: u32,
 ) -> Result<(), ()> {
-	let blocks = determine_metered_blocks(instructions, rules)?;
-	let locals_init_cost =
-		(rules.local_init_cost() as u64).checked_mul(locals_count as u64).ok_or(())?;
-	insert_metering_calls(instructions, gas_function_cost, locals_init_cost, blocks, gas_func)
+	let blocks = determine_metered_blocks(instructions, rules, locals_count)?;
+	insert_metering_calls(instructions, gas_function_cost, blocks, gas_func)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
 fn insert_metering_calls(
 	instructions: &mut elements::Instructions,
 	gas_function_cost: u64,
-	locals_init_cost: u64,
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
@@ -690,15 +691,8 @@ fn insert_metering_calls(
 		// If there the next block starts at this position, inject metering instructions.
 		let used_block = if let Some(block) = block_iter.peek() {
 			if block.start_pos == original_pos {
-				// Charge locals initialization cost to the beginning of the function block.
-				let block_cost = if original_pos == 0 {
-					block.cost.checked_add(locals_init_cost).ok_or(())?
-				} else {
-					block.cost
-				};
-
 				new_instrs
-					.push(I64Const((block_cost.checked_add(gas_function_cost).ok_or(())?) as i64));
+					.push(I64Const((block.cost.checked_add(gas_function_cost).ok_or(())?) as i64));
 				new_instrs.push(Call(gas_func));
 				true
 			} else {
