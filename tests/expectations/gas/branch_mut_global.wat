@@ -3,7 +3,7 @@
   (type (;1;) (func (param i64)))
   (func $fibonacci_with_break (;0;) (type 0) (result i32)
     (local $x i32) (local $y i32)
-    i64.const 24
+    i64.const 26
     call 1
     block ;; label = @1
       i32.const 0

@@ -22,6 +22,8 @@ In other words: Upgrading this pallet will not break pre-existing contracts.
 
 - Add new gas metering method: mutable global + local gas function
 [#34](https://github.com/paritytech/wasm-instrument/pull/34)
+- Account for locals initialization costs
+[#38](https://github.com/paritytech/wasm-instrument/pull/38)
 
 ## [v0.3.0]
 

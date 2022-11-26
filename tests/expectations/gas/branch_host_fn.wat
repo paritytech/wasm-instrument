@@ -4,7 +4,7 @@
   (import "env" "gas" (func (;0;) (type 1)))
   (func $fibonacci_with_break (;1;) (type 0) (result i32)
     (local i32 i32)
-    i64.const 13
+    i64.const 15
     call 0
     block ;; label = @1
       i32.const 0

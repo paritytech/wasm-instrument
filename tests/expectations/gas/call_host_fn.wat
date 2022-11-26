@@ -4,7 +4,7 @@
   (import "env" "gas" (func (;0;) (type 1)))
   (func $add_locals (;1;) (type 0) (param $x i32) (param $y i32) (result i32)
     (local i32)
-    i64.const 5
+    i64.const 6
     call 0
     local.get $x
     local.get $y

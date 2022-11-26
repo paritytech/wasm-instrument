@@ -134,6 +134,10 @@ fn build_control_flow_graph(
 
 	let mut stack = vec![ControlFrame::new(entry_node_id, terminal_node_id, false)];
 	let mut metered_blocks_iter = blocks.iter().peekable();
+
+	let locals_count = body.locals().iter().fold(0, |count, val_type| count + val_type.count());
+	let locals_init_cost = (rules.call_per_local_cost()).checked_mul(locals_count).ok_or(())?;
+
 	for (cursor, instruction) in body.code().elements().iter().enumerate() {
 		let active_node_id = stack
 			.last()
@@ -149,6 +153,10 @@ fn build_control_flow_graph(
 			graph.increment_charged_cost(active_node_id, next_metered_block.cost);
 		}
 
+		// Add locals initialization cost to the function block.
+		if cursor == 0 {
+			graph.increment_actual_cost(active_node_id, locals_init_cost);
+		}
 		let instruction_cost = rules.instruction_cost(instruction).ok_or(())?;
 		match instruction {
 			Instruction::Block(_) => {
@@ -342,8 +350,11 @@ mod tests {
 
 			for func_body in module.code_section().iter().flat_map(|section| section.bodies()) {
 				let rules = ConstantCostRules::default();
+				let locals_count =
+					func_body.locals().iter().fold(0, |count, val_type| count + val_type.count());
 
-				let metered_blocks = determine_metered_blocks(func_body.code(), &rules).unwrap();
+				let metered_blocks =
+					determine_metered_blocks(func_body.code(), &rules, locals_count).unwrap();
 				let success =
 					validate_metering_injections(func_body, &rules, &metered_blocks).unwrap();
 				assert!(success);
