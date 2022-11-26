@@ -37,8 +37,8 @@ pub trait Rules {
 	/// [`MemoryGrowCost::Free`] introduces some overhead to the `memory.grow` instruction.
 	fn memory_grow_cost(&self) -> MemoryGrowCost;
 
-	/// Returns the cost of zero-inilization of a single local variable.
-	fn local_init_cost(&self) -> u32;
+	/// A surcharge cost to calling a function that is added per local of that function.
+	fn call_per_local_cost(&self) -> u32;
 }
 
 /// Dynamic costs for memory growth.
@@ -260,7 +260,8 @@ pub fn inject<R: Rules, B: Backend>(
 					let locals_count = func_body
 						.locals()
 						.iter()
-						.fold(0, |count, val_type| count + val_type.count());
+						.map(|val_type| val_type.count())
+						.sum();
 					if inject_counter(
 						func_body.code_mut(),
 						gas_fn_cost,
@@ -593,7 +594,7 @@ fn determine_metered_blocks<R: Rules>(
 	// Begin an implicit function (i.e. `func...end`) block.
 	counter.begin_control_block(0, false);
 	// Add locals initialization cost to the function block.
-	let locals_init_cost = (rules.local_init_cost()).checked_mul(locals_count).ok_or(())?;
+	let locals_init_cost = rules.local_init_cost().checked_mul(locals_count).ok_or(())?;
 	counter.increment(locals_init_cost)?;
 
 	for cursor in 0..instructions.elements().len() {
