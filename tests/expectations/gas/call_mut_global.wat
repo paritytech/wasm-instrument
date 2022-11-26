@@ -3,7 +3,7 @@
   (type (;1;) (func (param i64)))
   (func $add_locals (;0;) (type 0) (param $x i32) (param $y i32) (result i32)
     (local $t i32)
-    i64.const 16
+    i64.const 17
     call 2
     local.get $x
     local.get $y

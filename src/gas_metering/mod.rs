@@ -36,6 +36,9 @@ pub trait Rules {
 	/// code into the function calling `memory.grow`. Therefore returning anything but
 	/// [`MemoryGrowCost::Free`] introduces some overhead to the `memory.grow` instruction.
 	fn memory_grow_cost(&self) -> MemoryGrowCost;
+
+	/// Returns the cost of zero-inilization of a single local variable.
+	fn local_init_cost(&self) -> u32;
 }
 
 /// Dynamic costs for memory growth.
@@ -76,6 +79,7 @@ impl MemoryGrowCost {
 pub struct ConstantCostRules {
 	instruction_cost: u32,
 	memory_grow_cost: u32,
+	local_init_cost: u32,
 }
 
 impl ConstantCostRules {
@@ -83,15 +87,15 @@ impl ConstantCostRules {
 	///
 	/// Uses `instruction_cost` for every instruction and `memory_grow_cost` to dynamically
 	/// meter the memory growth instruction.
-	pub fn new(instruction_cost: u32, memory_grow_cost: u32) -> Self {
-		Self { instruction_cost, memory_grow_cost }
+	pub fn new(instruction_cost: u32, memory_grow_cost: u32, local_init_cost: u32) -> Self {
+		Self { instruction_cost, memory_grow_cost, local_init_cost }
 	}
 }
 
 impl Default for ConstantCostRules {
 	/// Uses instruction cost of `1` and disables memory growth instrumentation.
 	fn default() -> Self {
-		Self { instruction_cost: 1, memory_grow_cost: 0 }
+		Self { instruction_cost: 1, memory_grow_cost: 0, local_init_cost: 1 }
 	}
 }
 
@@ -102,6 +106,10 @@ impl Rules for ConstantCostRules {
 
 	fn memory_grow_cost(&self) -> MemoryGrowCost {
 		NonZeroU32::new(self.memory_grow_cost).map_or(MemoryGrowCost::Free, MemoryGrowCost::Linear)
+	}
+
+	fn local_init_cost(&self) -> u32 {
+		self.local_init_cost
 	}
 }
 
@@ -249,8 +257,18 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					if inject_counter(func_body.code_mut(), gas_fn_cost, rules, gas_func_idx)
-						.is_err()
+					let locals_count = func_body
+						.locals()
+						.iter()
+						.fold(0, |count, val_type| count + val_type.count());
+					if inject_counter(
+						func_body.code_mut(),
+						gas_fn_cost,
+						locals_count,
+						rules,
+						gas_func_idx,
+					)
+					.is_err()
 					{
 						error = true;
 						break
@@ -640,17 +658,21 @@ fn determine_metered_blocks<R: Rules>(
 fn inject_counter<R: Rules>(
 	instructions: &mut elements::Instructions,
 	gas_function_cost: u64,
+	locals_count: u32,
 	rules: &R,
 	gas_func: u32,
 ) -> Result<(), ()> {
 	let blocks = determine_metered_blocks(instructions, rules)?;
-	insert_metering_calls(instructions, gas_function_cost, blocks, gas_func)
+	let locals_init_cost =
+		(rules.local_init_cost() as u64).checked_mul(locals_count as u64).ok_or(())?;
+	insert_metering_calls(instructions, gas_function_cost, locals_init_cost, blocks, gas_func)
 }
 
 // Then insert metering calls into a sequence of instructions given the block locations and costs.
 fn insert_metering_calls(
 	instructions: &mut elements::Instructions,
 	gas_function_cost: u64,
+	locals_init_cost: u64,
 	blocks: Vec<MeteredBlock>,
 	gas_func: u32,
 ) -> Result<(), ()> {
@@ -668,7 +690,15 @@ fn insert_metering_calls(
 		// If there the next block starts at this position, inject metering instructions.
 		let used_block = if let Some(block) = block_iter.peek() {
 			if block.start_pos == original_pos {
-				new_instrs.push(I64Const((block.cost + gas_function_cost) as i64));
+				// Charge locals initialization cost to the beginning of the function block.
+				let block_cost = if original_pos == 0 {
+					block.cost.checked_add(locals_init_cost).ok_or(())?
+				} else {
+					block.cost
+				};
+
+				new_instrs
+					.push(I64Const((block_cost.checked_add(gas_function_cost).ok_or(())?) as i64));
 				new_instrs.push(Call(gas_func));
 				true
 			} else {
@@ -722,7 +752,7 @@ mod tests {
 		);
 		let backend = host_function::Injector::new("env", "gas");
 		let injected_module =
-			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
+			super::inject(module, backend, &ConstantCostRules::new(1, 10_000, 1)).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
@@ -759,7 +789,7 @@ mod tests {
 		);
 		let backend = mutable_global::Injector::new("gas_left");
 		let injected_module =
-			super::inject(module, backend, &ConstantCostRules::new(1, 10_000)).unwrap();
+			super::inject(module, backend, &ConstantCostRules::new(1, 10_000, 1)).unwrap();
 
 		assert_eq!(
 			get_function_body(&injected_module, 0).unwrap(),
