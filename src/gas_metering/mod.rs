@@ -79,7 +79,7 @@ impl MemoryGrowCost {
 pub struct ConstantCostRules {
 	instruction_cost: u32,
 	memory_grow_cost: u32,
-	local_init_cost: u32,
+	call_per_local_cost: u32,
 }
 
 impl ConstantCostRules {
@@ -87,15 +87,15 @@ impl ConstantCostRules {
 	///
 	/// Uses `instruction_cost` for every instruction and `memory_grow_cost` to dynamically
 	/// meter the memory growth instruction.
-	pub fn new(instruction_cost: u32, memory_grow_cost: u32, local_init_cost: u32) -> Self {
-		Self { instruction_cost, memory_grow_cost, local_init_cost }
+	pub fn new(instruction_cost: u32, memory_grow_cost: u32, call_per_local_cost: u32) -> Self {
+		Self { instruction_cost, memory_grow_cost, call_per_local_cost }
 	}
 }
 
 impl Default for ConstantCostRules {
 	/// Uses instruction cost of `1` and disables memory growth instrumentation.
 	fn default() -> Self {
-		Self { instruction_cost: 1, memory_grow_cost: 0, local_init_cost: 1 }
+		Self { instruction_cost: 1, memory_grow_cost: 0, call_per_local_cost: 1 }
 	}
 }
 
@@ -108,8 +108,8 @@ impl Rules for ConstantCostRules {
 		NonZeroU32::new(self.memory_grow_cost).map_or(MemoryGrowCost::Free, MemoryGrowCost::Linear)
 	}
 
-	fn local_init_cost(&self) -> u32 {
-		self.local_init_cost
+	fn call_per_local_cost(&self) -> u32 {
+		self.call_per_local_cost
 	}
 }
 
@@ -257,11 +257,8 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					let locals_count = func_body
-						.locals()
-						.iter()
-						.map(|val_type| val_type.count())
-						.sum();
+					let locals_count =
+						func_body.locals().iter().map(|val_type| val_type.count()).sum();
 					if inject_counter(
 						func_body.code_mut(),
 						gas_fn_cost,
@@ -594,7 +591,7 @@ fn determine_metered_blocks<R: Rules>(
 	// Begin an implicit function (i.e. `func...end`) block.
 	counter.begin_control_block(0, false);
 	// Add locals initialization cost to the function block.
-	let locals_init_cost = rules.local_init_cost().checked_mul(locals_count).ok_or(())?;
+	let locals_init_cost = rules.call_per_local_cost().checked_mul(locals_count).ok_or(())?;
 	counter.increment(locals_init_cost)?;
 
 	for cursor in 0..instructions.elements().len() {
