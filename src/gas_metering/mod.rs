@@ -166,7 +166,7 @@ pub fn inject<R: Rules, B: Backend>(
 	let functions_space = module.functions_space() as u32;
 	let gas_global_idx = module.globals_space() as u32;
 
-	let mut mbuilder = builder::from_module(module);
+	let mut mbuilder = builder::from_module(module.clone());
 
 	// Calculate the indexes and gas function cost,
 	// for external gas function the cost is counted on the host side
@@ -224,15 +224,14 @@ pub fn inject<R: Rules, B: Backend>(
 	};
 
 	// We need the built the module for making injections to its blocks
-	let mut module = mbuilder.build();
+	let mut resulting_module = mbuilder.build();
 
 	let mut need_grow_counter = false;
 	let mut error = false;
-
 	// Iterate over module sections and perform needed transformations.
 	// Indexes are needed to be fixed up in `GasMeter::External` case, as it adds an imported
 	// function, which goes to the beginning of the module's functions space.
-	for section in module.sections_mut() {
+	for section in resulting_module.sections_mut() {
 		match section {
 			elements::Section::Code(code_section) => {
 				let injection_targets = match gas_meter {
@@ -335,9 +334,9 @@ pub fn inject<R: Rules, B: Backend>(
 	}
 
 	if need_grow_counter {
-		Ok(add_grow_counter(module, rules, gas_func_idx))
+		Ok(add_grow_counter(resulting_module, rules, gas_func_idx))
 	} else {
-		Ok(module)
+		Ok(resulting_module)
 	}
 }
 
