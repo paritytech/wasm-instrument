@@ -257,18 +257,23 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					let locals_count =
-						func_body.locals().iter().map(|val_type| val_type.count()).sum();
-					if inject_counter(
-						func_body.code_mut(),
-						gas_fn_cost,
-						locals_count,
-						rules,
-						gas_func_idx,
-					)
-					.is_err()
+					error = if let Some(locals_count) = func_body
+						.locals()
+						.iter()
+						.try_fold(0u32, |count, val_type| count.checked_add(val_type.count()))
 					{
-						error = true;
+						inject_counter(
+							func_body.code_mut(),
+							gas_fn_cost,
+							locals_count,
+							rules,
+							gas_func_idx,
+						)
+						.is_err()
+					} else {
+						true
+					};
+					if error {
 						break
 					}
 					if rules.memory_grow_cost().enabled() &&
