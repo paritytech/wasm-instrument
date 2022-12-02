@@ -112,8 +112,8 @@ pub mod mutable_global {
 			];
 
 			// calculate gas used for the gas charging func execution itself
-			let mut gas_fn_cost = func_instructions.iter().fold(0, |cost, instruction| {
-				cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
+			let mut gas_fn_cost = func_instructions.iter().fold(0, |cost: u64, instruction| {
+				cost.saturating_add(rules.instruction_cost(instruction).unwrap_or(u32::MAX).into())
 			});
 			// don't charge for the instructions used to fail when out of gas
 			let fail_cost = vec![
@@ -122,10 +122,11 @@ pub mod mutable_global {
 				Instruction::Unreachable,               // non-charged instruction
 			]
 			.iter()
-			.fold(0, |cost, instruction| {
-				cost + (rules.instruction_cost(instruction).unwrap_or(0) as u64)
+			.fold(0, |cost: u64, instruction| {
+				cost.saturating_add(rules.instruction_cost(instruction).unwrap_or(u32::MAX).into())
 			});
 
+			// the fail costs are a subset of the overall costs and hence this never underflows
 			gas_fn_cost -= fail_cost;
 
 			GasMeter::Internal {
