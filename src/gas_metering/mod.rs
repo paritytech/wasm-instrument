@@ -227,11 +227,11 @@ pub fn inject<R: Rules, B: Backend>(
 	let mut resulting_module = mbuilder.build();
 
 	let mut need_grow_counter = false;
-	let mut error = false;
+	let mut result = Ok(());
 	// Iterate over module sections and perform needed transformations.
 	// Indexes are needed to be fixed up in `GasMeter::External` case, as it adds an imported
 	// function, which goes to the beginning of the module's functions space.
-	for section in resulting_module.sections_mut() {
+	'outer: for section in resulting_module.sections_mut() {
 		match section {
 			elements::Section::Code(code_section) => {
 				let injection_targets = match gas_meter {
@@ -256,24 +256,22 @@ pub fn inject<R: Rules, B: Backend>(
 							}
 						}
 					}
-					error = if let Some(locals_count) = func_body
+					result = func_body
 						.locals()
 						.iter()
 						.try_fold(0u32, |count, val_type| count.checked_add(val_type.count()))
-					{
-						inject_counter(
-							func_body.code_mut(),
-							gas_fn_cost,
-							locals_count,
-							rules,
-							gas_func_idx,
-						)
-						.is_err()
-					} else {
-						true
-					};
-					if error {
-						break
+						.ok_or(())
+						.and_then(|locals_count| {
+							inject_counter(
+								func_body.code_mut(),
+								gas_fn_cost,
+								locals_count,
+								rules,
+								gas_func_idx,
+							)
+						});
+					if result.is_err() {
+						break 'outer
 					}
 					if rules.memory_grow_cost().enabled() &&
 						inject_grow_counter(func_body.code_mut(), total_func) > 0
@@ -329,9 +327,7 @@ pub fn inject<R: Rules, B: Backend>(
 		}
 	}
 
-	if error {
-		return Err(module)
-	}
+	result.map_err(|_| module)?;
 
 	if need_grow_counter {
 		Ok(add_grow_counter(resulting_module, rules, gas_func_idx))
