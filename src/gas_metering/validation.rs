@@ -354,8 +354,7 @@ mod tests {
 
 			for func_body in module.code_section().iter().flat_map(|section| section.bodies()) {
 				let rules = ConstantCostRules::default();
-				let locals_count =
-					func_body.locals().iter().fold(0, |count, val_type| count + val_type.count());
+				let locals_count = func_body.locals().iter().map(|val_type| val_type.count()).sum();
 
 				let metered_blocks =
 					determine_metered_blocks(func_body.code(), &rules, locals_count).unwrap();
