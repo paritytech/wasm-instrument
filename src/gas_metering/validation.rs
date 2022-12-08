@@ -135,8 +135,12 @@ fn build_control_flow_graph(
 	let mut stack = vec![ControlFrame::new(entry_node_id, terminal_node_id, false)];
 	let mut metered_blocks_iter = blocks.iter().peekable();
 
-	let locals_count = body.locals().iter().fold(0, |count, val_type| count + val_type.count());
-	let locals_init_cost = (rules.call_per_local_cost()).checked_mul(locals_count).ok_or(())?;
+	let locals_count = body
+		.locals()
+		.iter()
+		.try_fold(0u32, |count, val_type| count.checked_add(val_type.count()))
+		.ok_or(())?;
+	let locals_init_cost = rules.call_per_local_cost().checked_mul(locals_count).ok_or(())?;
 
 	for (cursor, instruction) in body.code().elements().iter().enumerate() {
 		let active_node_id = stack
@@ -350,8 +354,7 @@ mod tests {
 
 			for func_body in module.code_section().iter().flat_map(|section| section.bodies()) {
 				let rules = ConstantCostRules::default();
-				let locals_count =
-					func_body.locals().iter().fold(0, |count, val_type| count + val_type.count());
+				let locals_count = func_body.locals().iter().map(|val_type| val_type.count()).sum();
 
 				let metered_blocks =
 					determine_metered_blocks(func_body.code(), &rules, locals_count).unwrap();
