@@ -176,7 +176,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 		match opcode {
 			Nop => {},
 			Block(ty) | Loop(ty) | If(ty) => {
-				let end_arity = if *ty == BlockType::NoResult { 0 } else { 1 };
+				let end_arity = u32::from(*ty != BlockType::NoResult);
 				let branch_arity = if let Loop(_) = *opcode { 0 } else { end_arity };
 				if let If(_) = *opcode {
 					stack.pop_values(1)?;

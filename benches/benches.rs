@@ -28,7 +28,7 @@ where
 {
 	for entry in read_dir(fixture_dir()).unwrap() {
 		let entry = entry.unwrap();
-		let bytes = read(&entry.path()).unwrap();
+		let bytes = read(entry.path()).unwrap();
 		group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
 		group.bench_with_input(entry.file_name().to_str().unwrap(), &bytes, |bench, input| {
 			bench.iter(|| f(deserialize_buffer(input).unwrap()))
