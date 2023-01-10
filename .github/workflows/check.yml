@@ -84,29 +84,29 @@ jobs:
           command: build
           args: --no-default-features --target wasm32-unknown-unknown
 
-test:
-  strategy:
-    matrix:
-      os: ["ubuntu_20_64_core", "macos-latest", "windows-latest"]
-  runs-on: ${{ matrix.os }}
-  steps:
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        default: true
+  test:
+    strategy:
+      matrix:
+        os: ["ubuntu_20_64_core", "macos-latest", "windows-latest"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          default: true
 
-    - name: Set git to use LF
-      run: |
-        git config --global core.autocrlf false
-        git config --global core.eol lf
+      - name: Set git to use LF
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
 
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Cargo test
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-        args: --all-features
+      - name: Cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features
 
