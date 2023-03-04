@@ -32,7 +32,7 @@ rand = "0.8"
 wat = "1"
 wasmparser = "0.101"
 wasmprinter = "0.2"
-wasmi = "0.22"
+wasmi = "0.28"
 
 [features]
 default = ["std"]
