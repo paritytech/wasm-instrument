@@ -12,9 +12,14 @@ repository = "https://github.com/paritytech/wasm-instrument"
 include = ["src/**/*", "LICENSE-*", "README.md"]
 
 [[bench]]
-name = "benches"
+name = "instrumentation"
 harness = false
-path = "benches/benches.rs"
+path = "benches/instrumentation.rs"
+
+[[bench]]
+name = "execution"
+harness = false
+path = "benches/execution.rs"
 
 [profile.bench]
 lto = "fat"
@@ -32,7 +37,7 @@ rand = "0.8"
 wat = "1"
 wasmparser = "0.101"
 wasmprinter = "0.2"
-wasmi = "0.22"
+wasmi = "0.28"
 
 [features]
 default = ["std"]
