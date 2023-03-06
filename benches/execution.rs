@@ -74,9 +74,8 @@ impl MeteringStrategy for HostFunctionMetering {
 		linker
 			.func_wrap("env", "gas", |mut caller: Caller<'_, u64>, amount_consumed: u64| {
 				let gas_remaining = caller.data_mut();
-				*gas_remaining = gas_remaining
-					.checked_sub(amount_consumed)
-					.ok_or_else(|| TrapCode::OutOfFuel)?;
+				*gas_remaining =
+					gas_remaining.checked_sub(amount_consumed).ok_or(TrapCode::OutOfFuel)?;
 				Ok(())
 			})
 			.unwrap();
@@ -141,7 +140,7 @@ impl BenchInstance {
 /// We require the closures to implement `Fn` as they are executed for every strategy and we
 /// don't want them to change in between.
 ///
-///	`group`: The benchmark group within the benchmarks will be executed.
+/// `group`: The benchmark group within the benchmarks will be executed.
 /// `wasm`: The raw wasm module for the benchmark.
 /// `define_host_func`: In here the caller can define additional host function.
 /// `f`: In here the user should perform the benchmark. Will be executed for every strategy.
