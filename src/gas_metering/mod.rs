@@ -15,7 +15,7 @@ use alloc::{vec, vec::Vec};
 use core::{cmp::min, mem, num::NonZeroU32};
 use parity_wasm::{
 	builder,
-	elements::{self, IndexMap, Instruction, ValueType},
+	elements::{self, IndexMap, Instruction, Section, ValueType},
 };
 
 /// An interface that describes instruction costs.
@@ -257,7 +257,7 @@ pub fn post_injection_handler<R: Rules>(
 	// which goes to the beginning of the module's functions space.
 	for section in module.sections_mut() {
 		match section {
-			elements::Section::Code(code_section) => {
+			Section::Code(code_section) => {
 				for (i, func_body) in code_section.bodies_mut().iter_mut().enumerate() {
 					if import_count + i as u32 == gas_func_idx {
 						continue
@@ -294,48 +294,40 @@ pub fn post_injection_handler<R: Rules>(
 					}
 				}
 			},
-			elements::Section::Export(export_section) =>
-				if appended_count != 0 {
-					for export in export_section.entries_mut() {
-						if let elements::Internal::Function(func_index) = export.internal_mut() {
-							if *func_index >= appended_last_index {
-								*func_index += appended_count
-							}
+			Section::Export(export_section) if appended_count != 0 =>
+				for export in export_section.entries_mut() {
+					if let elements::Internal::Function(func_index) = export.internal_mut() {
+						if *func_index >= appended_last_index {
+							*func_index += appended_count
 						}
 					}
 				},
-			elements::Section::Element(elements_section) => {
+			Section::Element(elements_section) if appended_count != 0 => {
 				// Note that we do not need to check the element type referenced because in the
 				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				if appended_count != 0 {
-					for segment in elements_section.entries_mut() {
-						// update all indirect call addresses initial values
-						for func_index in segment.members_mut() {
-							if *func_index >= appended_last_index {
-								*func_index += appended_count
-							}
+				for segment in elements_section.entries_mut() {
+					// update all indirect call addresses initial values
+					for func_index in segment.members_mut() {
+						if *func_index >= appended_last_index {
+							*func_index += appended_count
 						}
 					}
 				}
 			},
-			elements::Section::Start(start_idx) =>
-				if appended_count != 0 {
-					if *start_idx >= appended_last_index {
-						*start_idx += appended_count
-					}
+			Section::Start(start_idx) if appended_count != 0 =>
+				if *start_idx >= appended_last_index {
+					*start_idx += appended_count
 				},
-			elements::Section::Name(s) =>
-				if appended_count != 0 {
-					for functions in s.functions_mut() {
-						*functions.names_mut() =
-							IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-								if idx >= appended_last_index {
-									idx += appended_count;
-								}
+			Section::Name(s) if appended_count != 0 =>
+				for functions in s.functions_mut() {
+					*functions.names_mut() =
+						IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
+							if idx >= appended_last_index {
+								idx += appended_count;
+							}
 
-								(idx, name.clone())
-							}));
-					}
+							(idx, name.clone())
+						}));
 				},
 			_ => {},
 		}
