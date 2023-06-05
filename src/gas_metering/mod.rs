@@ -170,7 +170,7 @@ pub fn inject<R: Rules, B: Backend>(
 
 	// Calculate the indexes and gas function cost,
 	// for external gas function the cost is counted on the host side
-	let (gas_func_idx, total_func, gas_fn_cost) = match gas_meter {
+	let (gas_func_idx, gas_fn_cost, appended_last_index, appended_count) = match gas_meter {
 		GasMeter::External { module: gas_module, function } => {
 			// Inject the import of the gas function
 			let import_sig = mbuilder
@@ -184,7 +184,7 @@ pub fn inject<R: Rules, B: Backend>(
 					.build(),
 			);
 
-			(import_count, functions_space + 1, 0)
+			(import_count, 0, import_count, 1)
 		},
 		GasMeter::Internal { global, ref func_instructions, cost } => {
 			// Inject the gas counting global
@@ -219,60 +219,74 @@ pub fn inject<R: Rules, B: Backend>(
 			// Inject local gas function
 			mbuilder.push_function(function);
 
-			(func_idx, func_idx + 1, cost)
+			(func_idx, cost, 0, 0)
 		},
 	};
 
-	// We need the built the module for making injections to its blocks
-	let mut resulting_module = mbuilder.build();
+	// We need the built module for making injections to its blocks
+	let resulting_module = mbuilder.build();
+	post_injection_handler(
+		resulting_module,
+		rules,
+		gas_func_idx,
+		gas_fn_cost,
+		appended_last_index,
+		appended_count,
+	)
+	.ok_or(module)
+}
 
+/// Helper procedure that makes adjustments after gas metering function injected.
+///
+/// See documentation for [`inject`] for more details.
+pub fn post_injection_handler<R: Rules>(
+	mut module: elements::Module,
+	rules: &R,
+	gas_func_idx: u32,
+	gas_fn_cost: u64,
+	appended_last_index: u32,
+	appended_count: u32,
+) -> Option<elements::Module> {
 	let mut need_grow_counter = false;
-	let mut result = Ok(());
+
+	let import_count = module.import_count(elements::ImportCountType::Function) as u32;
+	let total_func = module.functions_space() as u32;
+
 	// Iterate over module sections and perform needed transformations.
-	// Indexes are needed to be fixed up in `GasMeter::External` case, as it adds an imported
-	// function, which goes to the beginning of the module's functions space.
-	'outer: for section in resulting_module.sections_mut() {
+	// Indexes are needed to be fixed up if an imported function(s) appended,
+	// which goes to the beginning of the module's functions space.
+	for section in module.sections_mut() {
 		match section {
 			elements::Section::Code(code_section) => {
-				let injection_targets = match gas_meter {
-					GasMeter::External { .. } => code_section.bodies_mut().as_mut_slice(),
-					// Don't inject counters to the local gas function, which is the last one as
-					// it's just added. Cost for its execution is added statically before each
-					// invocation (see `inject_counter()`).
-					GasMeter::Internal { .. } => {
-						let len = code_section.bodies().len();
-						&mut code_section.bodies_mut()[..len - 1]
-					},
-				};
+				for (i, func_body) in code_section.bodies_mut().iter_mut().enumerate() {
+					if import_count + i as u32 == gas_func_idx {
+						continue
+					}
 
-				for func_body in injection_targets {
-					// Increment calling addresses if needed
-					if let GasMeter::External { .. } = gas_meter {
+					if appended_count != 0 {
 						for instruction in func_body.code_mut().elements_mut().iter_mut() {
 							if let Instruction::Call(call_index) = instruction {
-								if *call_index >= gas_func_idx {
-									*call_index += 1
+								if *call_index >= appended_last_index {
+									*call_index += appended_count
 								}
 							}
 						}
 					}
-					result = func_body
-						.locals()
-						.iter()
-						.try_fold(0u32, |count, val_type| count.checked_add(val_type.count()))
-						.ok_or(())
-						.and_then(|locals_count| {
-							inject_counter(
-								func_body.code_mut(),
-								gas_fn_cost,
-								locals_count,
-								rules,
-								gas_func_idx,
-							)
-						});
-					if result.is_err() {
-						break 'outer
+
+					let locals_count =
+						func_body.locals().iter().map(|val_type| val_type.count()).sum();
+					if inject_counter(
+						func_body.code_mut(),
+						gas_fn_cost,
+						locals_count,
+						rules,
+						gas_func_idx,
+					)
+					.is_err()
+					{
+						return None
 					}
+
 					if rules.memory_grow_cost().enabled() &&
 						inject_grow_counter(func_body.code_mut(), total_func) > 0
 					{
@@ -281,11 +295,11 @@ pub fn inject<R: Rules, B: Backend>(
 				}
 			},
 			elements::Section::Export(export_section) =>
-				if let GasMeter::External { module: _, function: _ } = gas_meter {
+				if appended_count != 0 {
 					for export in export_section.entries_mut() {
 						if let elements::Internal::Function(func_index) = export.internal_mut() {
-							if *func_index >= gas_func_idx {
-								*func_index += 1
+							if *func_index >= appended_last_index {
+								*func_index += appended_count
 							}
 						}
 					}
@@ -293,30 +307,30 @@ pub fn inject<R: Rules, B: Backend>(
 			elements::Section::Element(elements_section) => {
 				// Note that we do not need to check the element type referenced because in the
 				// WebAssembly 1.0 spec, the only allowed element type is funcref.
-				if let GasMeter::External { .. } = gas_meter {
+				if appended_count != 0 {
 					for segment in elements_section.entries_mut() {
 						// update all indirect call addresses initial values
 						for func_index in segment.members_mut() {
-							if *func_index >= gas_func_idx {
-								*func_index += 1
+							if *func_index >= appended_last_index {
+								*func_index += appended_count
 							}
 						}
 					}
 				}
 			},
 			elements::Section::Start(start_idx) =>
-				if let GasMeter::External { .. } = gas_meter {
-					if *start_idx >= gas_func_idx {
-						*start_idx += 1
+				if appended_count != 0 {
+					if *start_idx >= appended_last_index {
+						*start_idx += appended_count
 					}
 				},
 			elements::Section::Name(s) =>
-				if let GasMeter::External { .. } = gas_meter {
+				if appended_count != 0 {
 					for functions in s.functions_mut() {
 						*functions.names_mut() =
 							IndexMap::from_iter(functions.names().iter().map(|(mut idx, name)| {
-								if idx >= gas_func_idx {
-									idx += 1;
+								if idx >= appended_last_index {
+									idx += appended_count;
 								}
 
 								(idx, name.clone())
@@ -327,13 +341,10 @@ pub fn inject<R: Rules, B: Backend>(
 		}
 	}
 
-	result.map_err(|_| module)?;
-
-	if need_grow_counter {
-		Ok(add_grow_counter(resulting_module, rules, gas_func_idx))
-	} else {
-		Ok(resulting_module)
-	}
+	Some(match need_grow_counter {
+		true => add_grow_counter(module, rules, gas_func_idx),
+		false => module,
+	})
 }
 
 /// A control flow block is opened with the `block`, `loop`, and `if` instructions and is closed
