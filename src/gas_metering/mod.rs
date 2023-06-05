@@ -273,16 +273,21 @@ pub fn post_injection_handler<R: Rules>(
 						}
 					}
 
-					let locals_count =
-						func_body.locals().iter().map(|val_type| val_type.count()).sum();
-					if inject_counter(
-						func_body.code_mut(),
-						gas_fn_cost,
-						locals_count,
-						rules,
-						gas_func_idx,
-					)
-					.is_err()
+					if func_body
+						.locals()
+						.iter()
+						.try_fold(0u32, |count, val_type| count.checked_add(val_type.count()))
+						.ok_or(())
+						.and_then(|locals_count| {
+							inject_counter(
+								func_body.code_mut(),
+								gas_fn_cost,
+								locals_count,
+								rules,
+								gas_func_idx,
+							)
+						})
+						.is_err()
 					{
 						return None
 					}
