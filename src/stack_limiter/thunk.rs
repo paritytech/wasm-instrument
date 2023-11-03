@@ -1,11 +1,11 @@
-#[cfg(not(features = "std"))]
+#[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap as Map;
 use alloc::vec::Vec;
 use parity_wasm::{
 	builder,
 	elements::{self, FunctionType, Internal},
 };
-#[cfg(features = "std")]
+#[cfg(feature = "std")]
 use std::collections::HashMap as Map;
 
 use super::{resolve_func_type, Context};
