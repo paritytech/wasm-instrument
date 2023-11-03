@@ -3,25 +3,25 @@
 		(local $x i32) (local $y i32)
 
 		(block $unrolled_loop
-			(set_local $x (i32.const 0))
-			(set_local $y (i32.const 1))
+			(local.set $x (i32.const 0))
+			(local.set $y (i32.const 1))
 
-			get_local $x
-			get_local $y
-			tee_local $x
+			local.get $x
+			local.get $y
+			local.tee $x
 			i32.add
-			set_local $y
+			local.set $y
 
 			i32.const 1
 			br_if $unrolled_loop
 
-			get_local $x
-			get_local $y
-			tee_local $x
+			local.get $x
+			local.get $y
+			local.tee $x
 			i32.add
-			set_local $y
+			local.set $y
 		)
 
-		get_local $y
+		local.get $y
 	)
 )
