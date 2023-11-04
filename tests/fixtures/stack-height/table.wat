@@ -11,7 +11,7 @@
 	  local.get 1
 	  i32.add
   )
-  (table 10 anyfunc)
+  (table 10 funcref)
 
   ;; Refer all types of functions: imported, defined not exported and defined exported.
   (elem (i32.const 0) 0 1 2)
