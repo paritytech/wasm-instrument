@@ -1,15 +1,9 @@
 use super::resolve_func_type;
 use alloc::vec::Vec;
-use parity_wasm::elements::{self, BlockType, Type};
+use parity_wasm::elements::{self, BlockType, Instruction, Type};
 
 #[cfg(feature = "sign_ext")]
 use parity_wasm::elements::SignExtInstruction;
-
-// The cost in stack items that should be charged per call of a function. This is
-// is a static cost that is added to each function call. This makes sense because even
-// if a function does not use any parameters or locals some stack space on the host
-// machine might be consumed to hold some context.
-const ACTIVATION_FRAME_COST: u32 = 2;
 
 /// Control stack frame.
 #[derive(Debug)]
@@ -41,8 +35,8 @@ struct Stack {
 }
 
 impl Stack {
-	fn new() -> Stack {
-		Stack { height: ACTIVATION_FRAME_COST, control_stack: Vec::new() }
+	fn new() -> Self {
+		Self { height: 0, control_stack: Vec::new() }
 	}
 
 	/// Returns current height of the value stack.
@@ -121,57 +115,117 @@ impl Stack {
 	}
 }
 
-/// This function expects the function to be validated.
-pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
-	use parity_wasm::elements::Instruction::*;
+struct MaxHeightCounter<'a> {
+	module: &'a elements::Module,
+	stack: Stack,
+	max_height: u32,
+	count_instrumented_calls: bool,
+	func_imports: u32,
+	func_section: &'a elements::FunctionSection,
+	code_section: &'a elements::CodeSection,
+	type_section: &'a elements::TypeSection,
+}
 
-	let func_section = module.function_section().ok_or("No function section")?;
-	let code_section = module.code_section().ok_or("No code section")?;
-	let type_section = module.type_section().ok_or("No type section")?;
+impl<'a> MaxHeightCounter<'a> {
+	fn new(module: &'a elements::Module) -> Result<Self, &'static str> {
+		Ok(Self {
+			module,
+			stack: Stack::new(),
+			max_height: 0,
+			count_instrumented_calls: false,
+			func_imports: module.import_count(elements::ImportCountType::Function) as u32,
+			func_section: module.function_section().ok_or("No function section")?,
+			code_section: module.code_section().ok_or("No code section")?,
+			type_section: module.type_section().ok_or("No type section")?,
+		})
+	}
 
-	// Get a signature and a body of the specified function.
-	let func_sig_idx = func_section
-		.entries()
-		.get(func_idx as usize)
-		.ok_or("Function is not found in func section")?
-		.type_ref();
-	let Type::Function(func_signature) = type_section
-		.types()
-		.get(func_sig_idx as usize)
-		.ok_or("Function is not found in func section")?;
-	let body = code_section
-		.bodies()
-		.get(func_idx as usize)
-		.ok_or("Function body for the index isn't found")?;
-	let instructions = body.code();
+	fn count_instrumented_calls(mut self, count_instrumented_calls: bool) -> Self {
+		self.count_instrumented_calls = count_instrumented_calls;
+		self
+	}
 
-	let mut stack = Stack::new();
-	let mut max_height: u32 = 0;
-	let mut pc = 0;
+	fn compute_for_defined_func(&mut self, func_idx: u32) -> Result<u32, &'static str> {
+		// Get a signature and a body of the specified function.
+		let func_sig_idx = self
+			.func_section
+			.entries()
+			.get(func_idx as usize)
+			.ok_or("Function is not found in func section")?
+			.type_ref();
+		let Type::Function(func_signature) = self
+			.type_section
+			.types()
+			.get(func_sig_idx as usize)
+			.ok_or("Function is not found in func section")?;
+		let body = self
+			.code_section
+			.bodies()
+			.get(func_idx as usize)
+			.ok_or("Function body for the index isn't found")?;
+		let instructions = body.code();
 
-	// Add implicit frame for the function. Breaks to this frame and execution of
-	// the last end should deal with this frame.
-	let func_arity = func_signature.results().len() as u32;
-	stack.push_frame(Frame {
-		is_polymorphic: false,
-		end_arity: func_arity,
-		branch_arity: func_arity,
-		start_height: 0,
-	});
+		self.compute_for_raw_func(func_signature, instructions.elements())
+	}
 
-	loop {
-		if pc >= instructions.elements().len() {
-			break
+	fn compute_for_raw_func(
+		&mut self,
+		func_signature: &elements::FunctionType,
+		instructions: &[Instruction],
+	) -> Result<u32, &'static str> {
+		// Add implicit frame for the function. Breaks to this frame and execution of
+		// the last end should deal with this frame.
+		let func_arity = func_signature.results().len() as u32;
+		self.stack.push_frame(Frame {
+			is_polymorphic: false,
+			end_arity: func_arity,
+			branch_arity: func_arity,
+			start_height: 0,
+		});
+
+		for instruction in instructions {
+			let maybe_instructions = 'block: {
+				if !self.count_instrumented_calls {
+					break 'block None
+				}
+
+				let &Instruction::Call(idx) = instruction else { break 'block None };
+
+				if idx < self.func_imports {
+					break 'block None
+				}
+
+				Some(instrument_call!(idx, 0, 0, 0))
+			};
+
+			if let Some(instructions) = maybe_instructions {
+				for instruction in instructions.iter() {
+					self.process_instruction(instruction, func_arity)?;
+				}
+			} else {
+				self.process_instruction(instruction, func_arity)?;
+			}
 		}
+
+		Ok(self.max_height)
+	}
+
+	fn process_instruction(
+		&mut self,
+		opcode: &Instruction,
+		func_arity: u32,
+	) -> Result<(), &'static str> {
+		use Instruction::*;
+
+		// define a mutable reference to the stack so as not to use `self.stack` every time
+		let stack = &mut self.stack;
 
 		// If current value stack is higher than maximal height observed so far,
 		// save the new height.
 		// However, we don't increase maximal value in unreachable code.
-		if stack.height() > max_height && !stack.frame(0)?.is_polymorphic {
-			max_height = stack.height();
+		if stack.height() > self.max_height && !stack.frame(0)?.is_polymorphic {
+			self.max_height = stack.height();
 		}
-
-		let opcode = &instructions.elements()[pc];
 
 		match opcode {
 			Nop => {},
@@ -247,7 +301,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.mark_unreachable()?;
 			},
 			Call(idx) => {
-				let ty = resolve_func_type(*idx, module)?;
+				let ty = resolve_func_type(*idx, self.module)?;
 
 				// Pop values for arguments of the function.
 				stack.pop_values(ty.params().len() as u32)?;
@@ -258,7 +312,7 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 			},
 			CallIndirect(x, _) => {
 				let Type::Function(ty) =
-					type_section.types().get(*x as usize).ok_or("Type not found")?;
+					self.type_section.types().get(*x as usize).ok_or("Type not found")?;
 
 				// Pop the offset into the function table.
 				stack.pop_values(1)?;
@@ -403,10 +457,24 @@ pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static
 				stack.push_values(1)?;
 			},
 		}
-		pc += 1;
-	}
 
-	Ok(max_height)
+		Ok(())
+	}
+}
+
+/// This function expects the function to be validated.
+pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+	MaxHeightCounter::new(module)?
+		.count_instrumented_calls(true)
+		.compute_for_defined_func(func_idx)
+}
+
+pub fn compute_raw(
+	func_signature: &elements::FunctionType,
+	instructions: &[Instruction],
+	module: &elements::Module,
+) -> Result<u32, &'static str> {
+	MaxHeightCounter::new(module)?.compute_for_raw_func(func_signature, instructions)
 }
 
 #[cfg(test)]
@@ -437,7 +505,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 3);
 	}
 
 	#[test]
@@ -454,7 +522,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 1);
 	}
 
 	#[test]
@@ -472,7 +540,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, ACTIVATION_FRAME_COST);
+		assert_eq!(height, 0);
 	}
 
 	#[test]
@@ -501,7 +569,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 2 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 2);
 	}
 
 	#[test]
@@ -525,7 +593,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 1);
 	}
 
 	#[test]
@@ -547,7 +615,7 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 1 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 1);
 	}
 
 	#[test]
@@ -573,6 +641,6 @@ mod tests {
 		);
 
 		let height = compute(0, &module).unwrap();
-		assert_eq!(height, 3 + ACTIVATION_FRAME_COST);
+		assert_eq!(height, 3);
 	}
 }
