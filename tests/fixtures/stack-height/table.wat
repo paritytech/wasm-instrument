@@ -8,8 +8,8 @@
   )
   (func $i32.add (export "i32.add") (param i32 i32) (result i32)
     local.get 0
-	  local.get 1
-	  i32.add
+    local.get 1
+    i32.add
   )
   (table 10 funcref)
 
