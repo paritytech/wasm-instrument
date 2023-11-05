@@ -100,7 +100,7 @@ pub fn generate_thunks(
 	for thunk in replacement_map.values_mut() {
 		// TODO: Don't generate a signature, but find an existing one.
 
-		let Some(thunk_body) = thunk.body.take() else { continue };
+		let thunk_body = thunk.body.take().expect("can't get thunk function body");
 
 		mbuilder = mbuilder
 			.function()
