@@ -152,16 +152,6 @@ pub(crate) struct MaxStackHeightCounter<'a> {
 }
 
 impl<'a> MaxStackHeightCounter<'a> {
-	/// Tries to create [`MaxStackHeightCounter`] from [`elements::Module`].
-	pub fn try_new_with_module(module: &'a elements::Module) -> Result<Self, &'static str> {
-		Ok(Self {
-			context: module.try_into()?,
-			stack: Stack::new(),
-			max_height: 0,
-			count_instrumented_calls: false,
-		})
-	}
-
 	/// Ceeates [`MaxStackHeightCounter`] from [`MaxStackHeightCounterContext`].
 	pub fn new_with_context(context: MaxStackHeightCounterContext<'a>) -> Self {
 		Self { context, stack: Stack::new(), max_height: 0, count_instrumented_calls: false }
@@ -495,7 +485,7 @@ mod tests {
 	use parity_wasm::elements;
 
 	fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
-		MaxStackHeightCounter::try_new_with_module(module)?
+		MaxStackHeightCounter::new_with_context(module.try_into()?)
 			.count_instrumented_calls(true)
 			.compute_for_defined_func(func_idx)
 	}
