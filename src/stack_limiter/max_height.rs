@@ -204,8 +204,8 @@ impl<'a> MaxStackHeightCounter<'a> {
 						_ => None,
 					});
 
-			if let Some(instructions) = maybe_instructions {
-				for instruction in instructions.iter() {
+			if let Some(instructions) = maybe_instructions.as_ref() {
+				for instruction in instructions {
 					self.process_instruction(instruction, func_arity)?;
 				}
 			} else {
