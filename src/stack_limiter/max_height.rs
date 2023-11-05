@@ -152,7 +152,7 @@ pub(crate) struct MaxStackHeightCounter<'a> {
 }
 
 impl<'a> MaxStackHeightCounter<'a> {
-	/// Ceeates [`MaxStackHeightCounter`] from [`MaxStackHeightCounterContext`].
+	/// Creates a [`MaxStackHeightCounter`] from [`MaxStackHeightCounterContext`].
 	pub fn new_with_context(context: MaxStackHeightCounterContext<'a>) -> Self {
 		Self { context, stack: Stack::new(), max_height: 0, count_instrumented_calls: false }
 	}
