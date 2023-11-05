@@ -115,51 +115,60 @@ impl Stack {
 	}
 }
 
-struct MaxHeightCounter<'a> {
+/// This is a helper context that is used by [`MaxStackHeightCounter`].
+struct MaxStackHeightCounterContext<'a> {
 	module: &'a elements::Module,
-	stack: Stack,
-	max_height: u32,
-	count_instrumented_calls: bool,
 	func_imports: u32,
 	func_section: &'a elements::FunctionSection,
 	code_section: &'a elements::CodeSection,
 	type_section: &'a elements::TypeSection,
 }
 
-impl<'a> MaxHeightCounter<'a> {
+/// This is a counter for the maximum stack height with the ability to take into account the
+/// overhead that is added by the [`instrument_call!`] macro.
+struct MaxStackHeightCounter<'a> {
+	context: MaxStackHeightCounterContext<'a>,
+	stack: Stack,
+	max_height: u32,
+	count_instrumented_calls: bool,
+}
+
+impl<'a> MaxStackHeightCounter<'a> {
+	/// Tries to create [`MaxStackHeightCounter`] from [`elements::Module`].
 	fn new(module: &'a elements::Module) -> Result<Self, &'static str> {
-		Ok(Self {
+		let context = MaxStackHeightCounterContext {
 			module,
-			stack: Stack::new(),
-			max_height: 0,
-			count_instrumented_calls: false,
 			func_imports: module.import_count(elements::ImportCountType::Function) as u32,
 			func_section: module.function_section().ok_or("No function section")?,
 			code_section: module.code_section().ok_or("No code section")?,
 			type_section: module.type_section().ok_or("No type section")?,
-		})
+		};
+
+		Ok(Self { context, stack: Stack::new(), max_height: 0, count_instrumented_calls: false })
 	}
 
+	/// Should the overhead of the [`instrument_call!`] macro be taken into account?
 	fn count_instrumented_calls(mut self, count_instrumented_calls: bool) -> Self {
 		self.count_instrumented_calls = count_instrumented_calls;
 		self
 	}
 
+	/// Tries to calculate the maximum stack height for the `func_idx` defined in the wasm module.
 	fn compute_for_defined_func(&mut self, func_idx: u32) -> Result<u32, &'static str> {
+		let MaxStackHeightCounterContext { func_section, code_section, type_section, .. } =
+			self.context;
+
 		// Get a signature and a body of the specified function.
-		let func_sig_idx = self
-			.func_section
+		let func_sig_idx = func_section
 			.entries()
 			.get(func_idx as usize)
 			.ok_or("Function is not found in func section")?
 			.type_ref();
-		let Type::Function(func_signature) = self
-			.type_section
+		let Type::Function(func_signature) = type_section
 			.types()
 			.get(func_sig_idx as usize)
 			.ok_or("Function is not found in func section")?;
-		let body = self
-			.code_section
+		let body = code_section
 			.bodies()
 			.get(func_idx as usize)
 			.ok_or("Function body for the index isn't found")?;
@@ -168,6 +177,8 @@ impl<'a> MaxHeightCounter<'a> {
 		self.compute_for_raw_func(func_signature, instructions.elements())
 	}
 
+	/// Tries to calculate the maximum stack height for a raw function, which consists of
+	/// `func_signature` and `instructions`.
 	fn compute_for_raw_func(
 		&mut self,
 		func_signature: &elements::FunctionType,
@@ -191,7 +202,7 @@ impl<'a> MaxHeightCounter<'a> {
 
 				let &Instruction::Call(idx) = instruction else { break 'block None };
 
-				if idx < self.func_imports {
+				if idx < self.context.func_imports {
 					break 'block None
 				}
 
@@ -210,6 +221,7 @@ impl<'a> MaxHeightCounter<'a> {
 		Ok(self.max_height)
 	}
 
+	/// This function processes all incoming instructions and updates the `self.max_height` field.
 	fn process_instruction(
 		&mut self,
 		opcode: &Instruction,
@@ -217,14 +229,14 @@ impl<'a> MaxHeightCounter<'a> {
 	) -> Result<(), &'static str> {
 		use Instruction::*;
 
-		// define a mutable reference to the stack so as not to use `self.stack` every time
-		let stack = &mut self.stack;
+		let Self { stack, max_height, .. } = self;
+		let MaxStackHeightCounterContext { module, type_section, .. } = self.context;
 
 		// If current value stack is higher than maximal height observed so far,
 		// save the new height.
 		// However, we don't increase maximal value in unreachable code.
-		if stack.height() > self.max_height && !stack.frame(0)?.is_polymorphic {
-			self.max_height = stack.height();
+		if stack.height() > *max_height && !stack.frame(0)?.is_polymorphic {
+			*max_height = stack.height();
 		}
 
 		match opcode {
@@ -301,7 +313,7 @@ impl<'a> MaxHeightCounter<'a> {
 				stack.mark_unreachable()?;
 			},
 			Call(idx) => {
-				let ty = resolve_func_type(*idx, self.module)?;
+				let ty = resolve_func_type(*idx, module)?;
 
 				// Pop values for arguments of the function.
 				stack.pop_values(ty.params().len() as u32)?;
@@ -312,7 +324,7 @@ impl<'a> MaxHeightCounter<'a> {
 			},
 			CallIndirect(x, _) => {
 				let Type::Function(ty) =
-					self.type_section.types().get(*x as usize).ok_or("Type not found")?;
+					type_section.types().get(*x as usize).ok_or("Type not found")?;
 
 				// Pop the offset into the function table.
 				stack.pop_values(1)?;
@@ -464,17 +476,18 @@ impl<'a> MaxHeightCounter<'a> {
 
 /// This function expects the function to be validated.
 pub fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
-	MaxHeightCounter::new(module)?
+	MaxStackHeightCounter::new(module)?
 		.count_instrumented_calls(true)
 		.compute_for_defined_func(func_idx)
 }
 
+/// This function calculates the maximum stack height for a raw function (such as thunk functions).
 pub fn compute_raw(
 	func_signature: &elements::FunctionType,
 	instructions: &[Instruction],
 	module: &elements::Module,
 ) -> Result<u32, &'static str> {
-	MaxHeightCounter::new(module)?.compute_for_raw_func(func_signature, instructions)
+	MaxStackHeightCounter::new(module)?.compute_for_raw_func(func_signature, instructions)
 }
 
 #[cfg(test)]
