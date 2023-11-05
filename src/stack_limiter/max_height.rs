@@ -195,19 +195,14 @@ impl<'a> MaxStackHeightCounter<'a> {
 		});
 
 		for instruction in instructions {
-			let maybe_instructions = 'block: {
-				if !self.count_instrumented_calls {
-					break 'block None
-				}
-
-				let &Instruction::Call(idx) = instruction else { break 'block None };
-
-				if idx < self.context.func_imports {
-					break 'block None
-				}
-
-				Some(instrument_call!(idx, 0, 0, 0))
-			};
+			let maybe_instructions =
+				self.count_instrumented_calls
+					.then_some(instruction)
+					.and_then(|inst| match inst {
+						&Instruction::Call(idx) if idx >= self.context.func_imports =>
+							Some(instrument_call!(idx, 0, 0, 0)),
+						_ => None,
+					});
 
 			if let Some(instructions) = maybe_instructions {
 				for instruction in instructions.iter() {
