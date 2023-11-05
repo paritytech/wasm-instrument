@@ -8,7 +8,10 @@ use parity_wasm::{
 #[cfg(features = "std")]
 use std::collections::HashMap as Map;
 
-use super::{max_height, resolve_func_type, Context};
+use super::{
+	max_height::{MaxStackHeightCounter, MaxStackHeightCounterContext},
+	resolve_func_type, Context,
+};
 
 struct Thunk {
 	signature: FunctionType,
@@ -23,24 +26,19 @@ pub fn generate_thunks(
 ) -> Result<elements::Module, &'static str> {
 	// First, we need to collect all function indices that should be replaced by thunks
 	let mut replacement_map: Map<u32, Thunk> = {
-		let exports = module.export_section().map(|es| es.entries()).unwrap_or(&[]);
-		let elem_segments = module.elements_section().map(|es| es.entries()).unwrap_or(&[]);
-		let start_func_idx = module.start_section();
-
-		let exported_func_indices = exports.iter().filter_map(|entry| match entry.internal() {
-			Internal::Function(function_idx) => Some(*function_idx),
-			_ => None,
-		});
-		let table_func_indices =
-			elem_segments.iter().flat_map(|segment| segment.members()).cloned();
-
 		// Replacement map is at least export section size.
 		let mut replacement_map: Map<u32, Thunk> = Map::new();
 
-		for func_idx in exported_func_indices
-			.chain(table_func_indices)
-			.chain(start_func_idx.into_iter())
+		let mut peekable_iter = thunk_function_indexes(&module).peekable();
+		let maybe_context: Option<MaxStackHeightCounterContext> = if peekable_iter.peek().is_some()
 		{
+			let module_ref = &module;
+			Some(module_ref.try_into()?)
+		} else {
+			None
+		};
+
+		for func_idx in peekable_iter {
 			let mut callee_stack_cost =
 				ctx.stack_cost(func_idx).ok_or("function index isn't found")?;
 
@@ -70,7 +68,11 @@ pub fn generate_thunks(
 				thunk_body.push(Instruction::End);
 
 				// Update callee_stack_cost to charge for the thunk call itself
-				let thunk_cost = max_height::compute_raw(&signature, &thunk_body, &module)?;
+				let context =
+					maybe_context.expect("MaxStackHeightCounterContext must be initialized");
+				let thunk_cost = MaxStackHeightCounter::new_with_context(context)
+					.compute_for_raw_func(&signature, &thunk_body)?;
+
 				callee_stack_cost = callee_stack_cost
 					.checked_add(thunk_cost)
 					.ok_or("overflow during callee_stack_cost calculation")?;
@@ -151,4 +153,18 @@ pub fn generate_thunks(
 	}
 
 	Ok(module)
+}
+
+fn thunk_function_indexes(module: &elements::Module) -> impl Iterator<Item = u32> + '_ {
+	let exports = module.export_section().map(|es| es.entries()).unwrap_or(&[]);
+	let elem_segments = module.elements_section().map(|es| es.entries()).unwrap_or(&[]);
+	let start_func_idx = module.start_section();
+
+	let exported_func_indices = exports.iter().filter_map(|entry| match entry.internal() {
+		Internal::Function(function_idx) => Some(*function_idx),
+		_ => None,
+	});
+	let table_func_indices = elem_segments.iter().flat_map(|segment| segment.members()).cloned();
+
+	exported_func_indices.chain(table_func_indices).chain(start_func_idx)
 }

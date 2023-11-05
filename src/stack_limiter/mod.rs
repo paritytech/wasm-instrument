@@ -2,6 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use core::mem;
+use max_height::{MaxStackHeightCounter, MaxStackHeightCounterContext};
 use parity_wasm::{
 	builder,
 	elements::{self, Instruction, Instructions, Type},
@@ -155,16 +156,27 @@ fn generate_stack_height_global(module: &mut elements::Module) -> u32 {
 ///
 /// Returns a vector with a stack cost for each function, including imports.
 fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static str> {
-	let func_imports = module.import_count(elements::ImportCountType::Function);
+	let functions_space = module
+		.functions_space()
+		.try_into()
+		.map_err(|_| "Can't convert functions space to u32")?;
 
-	// TODO: optimize!
-	(0..module.functions_space())
+	// Don't create context when there are no functions (this will fail).
+	if functions_space == 0 {
+		return Ok(Vec::new());
+	}
+
+	// This context already contains the module, number of imports and section references.
+	// So we can use it to optimize access to these objects.
+	let context: MaxStackHeightCounterContext = module.try_into()?;
+
+	(0..functions_space)
 		.map(|func_idx| {
-			if func_idx < func_imports {
+			if func_idx < context.func_imports {
 				// We can't calculate stack_cost of the import functions.
 				Ok(0)
 			} else {
-				compute_stack_cost(func_idx as u32, module)
+				compute_stack_cost(func_idx, context)
 			}
 		})
 		.collect()
@@ -173,17 +185,18 @@ fn compute_stack_costs(module: &elements::Module) -> Result<Vec<u32>, &'static s
 /// Stack cost of the given *defined* function is the sum of it's locals count (that is,
 /// number of arguments plus number of local variables) and the maximal stack
 /// height.
-fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
+fn compute_stack_cost(
+	func_idx: u32,
+	context: MaxStackHeightCounterContext,
+) -> Result<u32, &'static str> {
 	// To calculate the cost of a function we need to convert index from
 	// function index space to defined function spaces.
-	let func_imports = module.import_count(elements::ImportCountType::Function) as u32;
 	let defined_func_idx = func_idx
-		.checked_sub(func_imports)
+		.checked_sub(context.func_imports)
 		.ok_or("This should be a index of a defined function")?;
 
-	let code_section =
-		module.code_section().ok_or("Due to validation code section should exists")?;
-	let body = &code_section
+	let body = context
+		.code_section
 		.bodies()
 		.get(defined_func_idx as usize)
 		.ok_or("Function body is out of bounds")?;
@@ -194,7 +207,9 @@ fn compute_stack_cost(func_idx: u32, module: &elements::Module) -> Result<u32, &
 			locals_count.checked_add(local_group.count()).ok_or("Overflow in local count")?;
 	}
 
-	let max_stack_height = max_height::compute(defined_func_idx, module)?;
+	let max_stack_height = MaxStackHeightCounter::new_with_context(context)
+		.count_instrumented_calls(true)
+		.compute_for_defined_func(defined_func_idx)?;
 
 	locals_count
 		.checked_add(max_stack_height)
