@@ -495,7 +495,7 @@ mod tests {
 	use parity_wasm::elements;
 
 	fn compute(func_idx: u32, module: &elements::Module) -> Result<u32, &'static str> {
-		MaxStackHeightCounter::new_with_module(module)?
+		MaxStackHeightCounter::try_new_with_module(module)?
 			.count_instrumented_calls(true)
 			.compute_for_defined_func(func_idx)
 	}
