@@ -465,7 +465,7 @@ mod tests {
   (memory 0)
   (func (result i32)
 	unreachable
-	grow_memory
+	memory.grow
   )
 )
 "#,

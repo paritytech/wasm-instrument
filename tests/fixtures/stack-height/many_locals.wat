@@ -6,5 +6,5 @@
 		(call
 			$one-group-many-locals
 		)
-  	)
+	)
 )
