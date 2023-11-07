@@ -7,7 +7,7 @@
     local.get 0
     i32.const 0
     global.get 0
-    i32.const 4
+    i32.const 2
     i32.add
     global.set 0
     global.get 0
@@ -18,7 +18,7 @@
     end
     call $i32.add
     global.get 0
-    i32.const 4
+    i32.const 2
     i32.sub
     global.set 0
     drop
@@ -31,7 +31,7 @@
   (func (;3;) (type 1) (param i32)
     local.get 0
     global.get 0
-    i32.const 4
+    i32.const 7
     i32.add
     global.set 0
     global.get 0
@@ -42,7 +42,7 @@
     end
     call 1
     global.get 0
-    i32.const 4
+    i32.const 7
     i32.sub
     global.set 0
   )
@@ -50,7 +50,7 @@
     local.get 0
     local.get 1
     global.get 0
-    i32.const 4
+    i32.const 6
     i32.add
     global.set 0
     global.get 0
@@ -61,7 +61,7 @@
     end
     call $i32.add
     global.get 0
-    i32.const 4
+    i32.const 6
     i32.sub
     global.set 0
   )

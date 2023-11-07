@@ -14,7 +14,7 @@
     local.get 0
     local.get 1
     global.get 0
-    i32.const 4
+    i32.const 6
     i32.add
     global.set 0
     global.get 0
@@ -25,7 +25,7 @@
     end
     call 2
     global.get 0
-    i32.const 4
+    i32.const 6
     i32.sub
     global.set 0
   )
