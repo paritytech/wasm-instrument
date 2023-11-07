@@ -35,9 +35,9 @@ diff = "0.1"
 pretty_assertions = "1"
 rand = "0.8"
 wat = "1"
-wasmparser = "0.104"
+wasmparser = "0.111"
 wasmprinter = "0.2"
-wasmi = "0.29"
+wasmi = "0.31"
 
 [features]
 default = ["std"]
