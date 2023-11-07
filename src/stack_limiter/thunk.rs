@@ -1,12 +1,8 @@
-#[cfg(not(features = "std"))]
-use alloc::collections::BTreeMap as Map;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap as Map, vec::Vec};
 use parity_wasm::{
 	builder,
 	elements::{self, FunctionType, Instruction, Instructions, Internal},
 };
-#[cfg(features = "std")]
-use std::collections::HashMap as Map;
 
 use super::{
 	max_height::{MaxStackHeightCounter, MaxStackHeightCounterContext},
