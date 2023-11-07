@@ -1,12 +1,8 @@
-#[cfg(not(features = "std"))]
-use alloc::collections::BTreeMap as Map;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap as Map, vec::Vec};
 use parity_wasm::{
 	builder,
 	elements::{self, FunctionType, Internal},
 };
-#[cfg(features = "std")]
-use std::collections::HashMap as Map;
 
 use super::{resolve_func_type, Context};
 
