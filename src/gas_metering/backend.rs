@@ -116,7 +116,7 @@ pub mod mutable_global {
 				cost.saturating_add(rules.instruction_cost(instruction).unwrap_or(u32::MAX).into())
 			});
 			// don't charge for the instructions used to fail when out of gas
-			let fail_cost = vec![
+			let fail_cost = [
 				Instruction::I64Const(-1i64),           // non-charged instruction
 				Instruction::SetGlobal(gas_global_idx), // non-charged instruction
 				Instruction::Unreachable,               // non-charged instruction

@@ -2,18 +2,18 @@
 	(func $add_locals (param $x i32) (param $y i32) (result i32)
 		(local $t i32)
 
-		get_local $x
-		get_local $y
+		local.get $x
+		local.get $y
 		call $add
-		set_local $t
+		local.set $t
 
-		get_local $t
+		local.get $t
 	)
 
 	(func $add (param $x i32) (param $y i32) (result i32)
 		(i32.add
-			(get_local $x)
-			(get_local $y)
+			(local.get $x)
+			(local.get $y)
 		)
 	)
 )
