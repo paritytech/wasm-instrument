@@ -36,7 +36,7 @@ pretty_assertions = "1"
 rand = "0.8"
 wat = "1"
 wasmparser = "0.121"
-wasmprinter = "0.2"
+wasmprinter = "0.200"
 wasmi = "0.31"
 
 [features]
