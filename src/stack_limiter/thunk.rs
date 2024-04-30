@@ -1,16 +1,19 @@
 use alloc::{collections::BTreeMap as Map, vec::Vec};
 use parity_wasm::{
 	builder,
-	elements::{self, FunctionType, Internal},
+	elements::{self, FunctionType, Instruction, Instructions, Internal},
 };
 
-use super::{resolve_func_type, Context};
+use super::{
+	max_height::{MaxStackHeightCounter, MaxStackHeightCounterContext},
+	resolve_func_type, Context,
+};
 
 struct Thunk {
 	signature: FunctionType,
+	body: Option<Vec<Instruction>>,
 	// Index in function space of this thunk.
 	idx: Option<u32>,
-	callee_stack_cost: u32,
 }
 
 pub fn generate_thunks(
@@ -19,36 +22,67 @@ pub fn generate_thunks(
 ) -> Result<elements::Module, &'static str> {
 	// First, we need to collect all function indices that should be replaced by thunks
 	let mut replacement_map: Map<u32, Thunk> = {
-		let exports = module.export_section().map(|es| es.entries()).unwrap_or(&[]);
-		let elem_segments = module.elements_section().map(|es| es.entries()).unwrap_or(&[]);
-		let start_func_idx = module.start_section();
-
-		let exported_func_indices = exports.iter().filter_map(|entry| match entry.internal() {
-			Internal::Function(function_idx) => Some(*function_idx),
-			_ => None,
-		});
-		let table_func_indices =
-			elem_segments.iter().flat_map(|segment| segment.members()).cloned();
-
 		// Replacement map is at least export section size.
 		let mut replacement_map: Map<u32, Thunk> = Map::new();
 
-		for func_idx in exported_func_indices
-			.chain(table_func_indices)
-			.chain(start_func_idx.into_iter())
+		let mut peekable_iter = thunk_function_indexes(&module).peekable();
+		let maybe_context: Option<MaxStackHeightCounterContext> = if peekable_iter.peek().is_some()
 		{
-			let callee_stack_cost = ctx.stack_cost(func_idx).ok_or("function index isn't found")?;
+			let module_ref = &module;
+			Some(module_ref.try_into()?)
+		} else {
+			None
+		};
+
+		for func_idx in peekable_iter {
+			let mut callee_stack_cost =
+				ctx.stack_cost(func_idx).ok_or("function index isn't found")?;
 
 			// Don't generate a thunk if stack_cost of a callee is zero.
 			if callee_stack_cost != 0 {
-				replacement_map.insert(
+				let signature = resolve_func_type(func_idx, &module)?.clone();
+
+				const CALLEE_STACK_COST_PLACEHOLDER: i32 = 1248163264;
+				let instrumented_call = instrument_call!(
 					func_idx,
-					Thunk {
-						signature: resolve_func_type(func_idx, &module)?.clone(),
-						idx: None,
-						callee_stack_cost,
-					},
+					CALLEE_STACK_COST_PLACEHOLDER,
+					ctx.stack_height_global_idx(),
+					ctx.stack_limit()
 				);
+
+				// Thunk body consist of:
+				//  - argument pushing
+				//  - instrumented call
+				//  - end
+				let mut thunk_body: Vec<Instruction> =
+					Vec::with_capacity(signature.params().len() + instrumented_call.len() + 1);
+
+				for (arg_idx, _) in signature.params().iter().enumerate() {
+					thunk_body.push(Instruction::GetLocal(arg_idx as u32));
+				}
+				thunk_body.extend_from_slice(&instrumented_call);
+				thunk_body.push(Instruction::End);
+
+				// Update callee_stack_cost to charge for the thunk call itself
+				let context =
+					maybe_context.expect("MaxStackHeightCounterContext must be initialized");
+				let thunk_cost = MaxStackHeightCounter::new_with_context(context)
+					.compute_for_raw_func(&signature, &thunk_body)?;
+
+				callee_stack_cost = callee_stack_cost
+					.checked_add(thunk_cost)
+					.ok_or("overflow during callee_stack_cost calculation")?;
+
+				// Update thunk body with new cost
+				for instruction in thunk_body
+					.iter_mut()
+					.filter(|i| **i == Instruction::I32Const(CALLEE_STACK_COST_PLACEHOLDER))
+				{
+					*instruction = Instruction::I32Const(callee_stack_cost as i32);
+				}
+
+				replacement_map
+					.insert(func_idx, Thunk { signature, body: Some(thunk_body), idx: None });
 			}
 		}
 
@@ -61,27 +95,10 @@ pub fn generate_thunks(
 	let mut next_func_idx = module.functions_space() as u32;
 
 	let mut mbuilder = builder::from_module(module);
-	for (func_idx, thunk) in replacement_map.iter_mut() {
-		let instrumented_call = instrument_call!(
-			*func_idx,
-			thunk.callee_stack_cost as i32,
-			ctx.stack_height_global_idx(),
-			ctx.stack_limit()
-		);
-		// Thunk body consist of:
-		//  - argument pushing
-		//  - instrumented call
-		//  - end
-		let mut thunk_body: Vec<elements::Instruction> =
-			Vec::with_capacity(thunk.signature.params().len() + instrumented_call.len() + 1);
-
-		for (arg_idx, _) in thunk.signature.params().iter().enumerate() {
-			thunk_body.push(elements::Instruction::GetLocal(arg_idx as u32));
-		}
-		thunk_body.extend_from_slice(&instrumented_call);
-		thunk_body.push(elements::Instruction::End);
-
+	for thunk in replacement_map.values_mut() {
 		// TODO: Don't generate a signature, but find an existing one.
+
+		let thunk_body = thunk.body.take().expect("can't get thunk function body");
 
 		mbuilder = mbuilder
 			.function()
@@ -91,7 +108,7 @@ pub fn generate_thunks(
 			.with_results(thunk.signature.results().to_vec())
 			.build()
 			.body()
-			.with_instructions(elements::Instructions::new(thunk_body))
+			.with_instructions(Instructions::new(thunk_body))
 			.build()
 			.build();
 
@@ -132,4 +149,18 @@ pub fn generate_thunks(
 	}
 
 	Ok(module)
+}
+
+fn thunk_function_indexes(module: &elements::Module) -> impl Iterator<Item = u32> + '_ {
+	let exports = module.export_section().map(|es| es.entries()).unwrap_or(&[]);
+	let elem_segments = module.elements_section().map(|es| es.entries()).unwrap_or(&[]);
+	let start_func_idx = module.start_section();
+
+	let exported_func_indices = exports.iter().filter_map(|entry| match entry.internal() {
+		Internal::Function(function_idx) => Some(*function_idx),
+		_ => None,
+	});
+	let table_func_indices = elem_segments.iter().flat_map(|segment| segment.members()).cloned();
+
+	exported_func_indices.chain(table_func_indices).chain(start_func_idx)
 }

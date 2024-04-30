@@ -5,7 +5,7 @@
   )
   (func $main (;1;) (type 0)
     global.get 0
-    i32.const 5
+    i32.const 3
     i32.add
     global.set 0
     global.get 0
@@ -16,7 +16,7 @@
     end
     call $one-group-many-locals
     global.get 0
-    i32.const 5
+    i32.const 3
     i32.sub
     global.set 0
   )
