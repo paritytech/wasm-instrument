@@ -29,7 +29,7 @@ codegen-units = 1
 parity-wasm = { version = "0.45", default-features = false }
 
 [dev-dependencies]
-binaryen = "0.12"
+binaryen = "0.13"
 criterion = "0.5"
 diff = "0.1"
 pretty_assertions = "1"
